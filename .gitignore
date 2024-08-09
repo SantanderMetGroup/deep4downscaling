@@ -1,4 +1,5 @@
 *.nc
+*.pt
 *.nc4
 *.npy
 *.out

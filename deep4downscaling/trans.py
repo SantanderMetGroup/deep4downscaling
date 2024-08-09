@@ -217,3 +217,82 @@ def split_data(*data: np.ndarray,
         data_split_2.append(x[split_threshold:, :])
 
     return (*data_split_1, *data_split_2)
+
+def scaling_delta_correction(data: xr.Dataset,
+                             gcm_hist: xr.Dataset, obs_hist: xr.Dataset) -> xr.Dataset:
+
+    """
+    Apply the scaling delta correction proposed in Baño-Medina et al. 2024 to bias-correct
+    the mean and standard deviation of data (GCM in historical/future scenrios) to "take it 
+    closer" to the distribution of the observations used to train the DL model (obs_hist).
+    When bias-correcting a GCM in a future scenario, the climate change seasonal is not lost,
+    as a delta between the future and historical climatology is added back to the bias-corrected
+    data (see Baño-Medina et al. 2024 or González-Abad 2024 for more details). By default this
+    correction is performed in a monthly basis.
+
+    Baño-Medina, J., Manzanas, R., Cimadevilla, E., Fernández, J., González-Abad,
+    J., Cofiño, A. S., and Gutiérrez, J. M.: Downscaling multi-model climate projection
+    ensembles with deep learning (DeepESD): contribution to CORDEX EUR-44, Geosci. Model
+    Dev., 15, 6747–6758.
+
+    González Abad, J. (2024). Towards explainable and physically-based deep learning
+    statistical downscaling methods. PhD thesis, Universidad de Cantabria.
+
+    Parameters
+    ----------
+    data : xr.Dataset
+        Data to bias-correct. This should correspond to the GCM in any historical
+        or future scenario.
+
+    gcm_hist : xr.Dataset
+        Historical period of the GCM to take as reference.
+
+    obs_hist : xr.Dataset
+        Observational period to take as reference.
+
+    Returns
+    -------
+    xr.Dataset
+        The bias-corrected data.
+    """
+
+    # Make a copy for the final object
+    data_final = data.copy(deep=True)
+
+    # Define the scaling delta correction
+    def _correction(data: xr.Dataset,
+                    gcm_hist: xr.Dataset, obs_hist: xr.Dataset) -> xr.Dataset:
+
+        data_final = data.copy(deep=True)
+
+        data_mean = data.mean('time')
+        gcm_hist_mean = gcm_hist.mean('time')
+        obs_hist_mean = obs_hist.mean('time')
+
+        gcm_hist_sd = gcm_hist.std('time')
+        obs_hist_sd = obs_hist.std('time')
+
+        delta = data_mean - gcm_hist_mean
+
+        data_final = ((((data_final - delta - gcm_hist_mean)/gcm_hist_sd) * \
+                   obs_hist_sd) + obs_hist_mean + delta)
+
+        return data_final
+
+    # Apply the correction by month
+    months = np.unique(data['time.month'].values)
+    for month in months:
+
+        data_month = data.sel(time=data.time.dt.month.isin(month))
+        gcm_hist_month = gcm_hist.sel(time=gcm_hist.time.dt.month.isin(month))
+        obs_hist_month = obs_hist.sel(time=obs_hist.time.dt.month.isin(month))
+
+        data_corrected = _correction(data=data_month,
+                                     gcm_hist=gcm_hist_month,
+                                     obs_hist=obs_hist_month)
+
+        # Assign the corrected variable to data_final
+        for var in data_final.keys():
+            data_final[var][data_final.time.dt.month.isin(month)] = data_corrected[var]
+
+    return data_final

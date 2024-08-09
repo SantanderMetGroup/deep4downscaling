@@ -16,7 +16,7 @@ def standard_training_loop(model: torch.nn.Module, model_name: str, model_path: 
     """
     Standard training loop for a DL model in a supervised setting. Besides the
     training, it is possible to perform a validation step and control the saving 
-    of the model thourgh an early stopping strategy. To activate the latter, pass
+    of the model through an early stopping strategy. To activate the latter, pass
     a value to the argument patience_early_stopping, otherwise the training will 
     continue for the num_epochs specified, saving the model at the end of each
     epoch.
