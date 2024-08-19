@@ -48,7 +48,7 @@ def _pred_to_xarray(data_pred: np.ndarray, time_pred: np.ndarray,
     """
     This internal function transforms the prediction from a DL model
     (np.ndarray) into a xr.Dataset with the corresponding temporal and
-    spatial dimensions. To do so it takes as inputa mask (xr.Dataset)
+    spatial dimensions. To do so it takes as input a mask (xr.Dataset)
     defining where to introduce (spatial dimension) the predictions of
     the DL model, returning as output a xr.Dataset filled with the
     data_pred. This function requires the time dimension of the 

@@ -296,3 +296,46 @@ def scaling_delta_correction(data: xr.Dataset,
             data_final[var][data_final.time.dt.month.isin(month)] = data_corrected[var]
 
     return data_final
+
+def replicate_across_time(data: xr.Dataset, ref: xr.Dataset) -> xr.Dataset:
+    
+    """
+    Replicate data across the ref time dimension by replicating it.
+
+    Parameters
+    ----------
+    data : xr.Dataset
+        The Dataset to replicate. If it already has a time dimension this
+        function removes it and replicates the first value of the DataArray.
+
+    ref : xr.Dataset
+        Dataset with the temporal dimension over which to replicate the data.
+
+    Returns
+    -------
+    xr.Dataset
+    """
+
+    data_final = data.copy(deep=True)
+
+    # If data has the time dimension with remove all but the first values,
+    # which is the one to be replicated across the time dimension of ref
+    if 'time' in data_final.dims:
+        data_final = data_final.sel(time=data_final['time'].values[0])
+        data_final = data_final.drop_vars('time')
+
+    # Get the name of the DataArray within the Dataset
+    var_name = list(data_final.data_vars)[0]
+
+    # Get the time values from ref
+    time_values = ref['time'].values
+
+    # Replicate across time
+    data_rep = xr.concat([data_final[var_name]] * len(time_values),
+                          dim='time')
+    data_rep['time'] = time_values
+
+    # Transform to Dataset
+    data_rep = data_rep.to_dataset(name=var_name)
+
+    return data_rep
