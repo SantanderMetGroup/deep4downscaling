@@ -283,7 +283,10 @@ class Asym(nn.Module):
     def prepare_parameters(self, device: str):
 
         """
-        Move the gamma parameters to device.
+        Move the gamma parameters to device and remove nans. The latter is key,
+        as if the gamma has not been fitted to the data (nans), it means that
+        there are not (few) rainy days. In this case, we set a weight of one
+        for any underestimation (which will be uncommon).
 
         Parameters
         ----------
@@ -294,6 +297,14 @@ class Asym(nn.Module):
         self.shape = torch.tensor(self.shape).to(device)
         self.scale = torch.tensor(self.scale).to(device)
         self.loc = torch.tensor(self.loc).to(device)
+
+        epsilon = 0.0000001
+        if torch.isnan(self.shape).any():
+            self.shape[torch.isnan(self.shape)] = epsilon
+        if torch.isnan(self.scale).any():
+            self.scale[torch.isnan(self.scale)] = epsilon
+        if torch.isnan(self.loc).any():
+            self.loc[torch.isnan(self.loc)] = 0
 
     def compute_cdf(self, data: torch.Tensor) -> torch.Tensor:
     
