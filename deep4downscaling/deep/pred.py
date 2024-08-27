@@ -24,6 +24,11 @@ def _predict(model: torch.nn.Module, device: str, **data: np.ndarray) -> np.ndar
         Input/Inputs to the model. There are no restrictions for the 
         argument name.
 
+    Notes
+    -----
+    If the model predicts multiple tensors, these are returned as a
+    tuple of np.ndarray(s).
+
     Returns
     -------
     np.ndarray
@@ -38,7 +43,10 @@ def _predict(model: torch.nn.Module, device: str, **data: np.ndarray) -> np.ndar
     with torch.no_grad():
         y_pred = model(*data.values())
 
-    y_pred = y_pred.cpu().numpy()
+    if type(y_pred) is tuple: # Handle DL models returning multiple tensors
+        y_pred = (x.cpu().numpy() for x in y_pred)
+    else:
+        y_pred = y_pred.cpu().numpy()
 
     return y_pred
 
@@ -281,3 +289,111 @@ def compute_preds_ber_gamma(x_data: xr.Dataset, model: torch.nn.Module, threshol
                                 var_target=var_target, mask=mask)
 
     return data_pred
+
+def compute_preds_elevation(x_data: xr.Dataset, model: torch.nn.Module, device: str,
+                            var_target: str, mask: xr.Dataset) -> xr.Dataset:
+
+    """
+    Given some xr.Dataset with predictor data, this function returns the prediction
+    of the DL model (in the proper format) given x_data as input, thus ignoring the
+    elevation returned by the model. This function is designed to work with models
+    computing the final prediction (e.g., MSE-based models). 
+
+    Notes
+    -----
+    For this function the mask is key, as it allows to convert the raw output of
+    the model to the proper xr.Dataset representation.
+
+    Parameters
+    ----------
+    x_data : xr.Dataset
+        Predictors to pass as input to the DL model. They must have a spatial
+        (lat and lon) and temporal dimension.
+
+    model : torch.nn.Module
+        Pytorch model to use.
+
+    device : str
+        Device used to run the inference (cuda or cpu).
+
+    var_target : str
+        Target variable.
+
+    mask : xr.Dataset
+        Mask with no temporal dimension formed by ones/zeros for (spatial)
+        positions to introduce data_pred/np.nans values.
+
+    Returns
+    -------
+    xr.Dataset
+        The final prediction (target variable)
+    """
+    
+    x_data_arr = trans.xarray_to_numpy(x_data)
+    time_pred = x_data['time'].values
+
+    data_pred, _ = _predict(model=model, device=device, x_data=x_data_arr)
+    data_pred = _pred_to_xarray(data_pred=data_pred, time_pred=time_pred,
+                                var_target=var_target, mask=mask)
+
+    return data_pred
+
+def compute_preds_multivariable(x_data: xr.Dataset, model: torch.nn.Module, device: str,
+                                vars_target: tuple, mask: xr.Dataset) -> xr.Dataset:
+    
+    """
+    Compute the prediction for model on x_data and the variables specified in vars_target.
+    The model passed needs to be multivariable, thus computing the prediction for more than
+    one variable. It is important for the order of vars_target to be the same as that of the
+    returned predictions.
+
+    Notes
+    -----
+    For this function the mask is key, as it allows to convert the raw output of
+    the model to the proper xr.Dataset representation. In this case, as the mask
+    has been probably computed with deep4downscaling.trans.compute_valid_multivariate_mask
+    the function cheks for the mask name of the DataArray.
+
+    Parameters
+    ----------
+    x_data : xr.Dataset
+        Predictors to pass as input to the DL model. They must have a spatial
+        (lat and lon) and temporal dimension.
+
+    model : torch.nn.Module
+        Pytorch model to use.
+
+    device : str
+        Device used to run the inference (cuda or cpu).
+
+    vars_target : tuple
+        Tuple containing the variables to predict.
+
+    mask : xr.Dataset
+        Mask with no temporal dimension formed by ones/zeros for (spatial)
+        positions to introduce data_pred/np.nans values.
+
+    Returns
+    -------
+    xr.Dataset
+        A dataset for each of the target variables.
+    """
+
+    x_data_arr = trans.xarray_to_numpy(x_data)
+    time_pred = x_data['time'].values
+
+    data_pred = _predict(model=model, device=device, x_data=x_data_arr)
+    data_pred = list(data_pred)
+
+    final_vars = []
+    for idx, var in enumerate(vars_target):
+        try:
+            var_pred = _pred_to_xarray(data_pred=data_pred[idx], time_pred=time_pred,
+                                        var_target=var, mask=mask)
+        except KeyError: 
+            var_pred = _pred_to_xarray(data_pred=data_pred[idx], time_pred=time_pred,
+                                        var_target='mask', mask=mask)
+            var_pred = var_pred.rename({'mask': var})
+        final_vars.append(var_pred)
+
+    return *final_vars, 

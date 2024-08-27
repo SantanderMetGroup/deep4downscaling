@@ -95,6 +95,34 @@ def standardize(data_ref: xr.Dataset, data: xr.Dataset) -> xr.Dataset:
 
     return data_stand
 
+def undo_standardization(data_ref: xr.Dataset, data: xr.Dataset) -> xr.Dataset:
+
+    """
+    Undo the standardize data with the mean and std computed over the data_ref.
+    x' = (x - mean) / std
+    x = (x' * std) + mean
+
+    Parameters
+    ----------
+    data_ref : xr.Dataset
+        Data used as reference to compute the mean and standard deviaton
+
+    data : xr.DataSet
+        Data to standardize
+
+    Returns
+    -------
+    xr.Dataset        
+        Standardize data
+    """
+
+    mean = data_ref.mean('time')
+    std = data_ref.std('time')
+
+    data_undo_stand = (data * std) + mean
+
+    return data_undo_stand
+
 def xarray_to_numpy(data: xr.Dataset) -> np.ndarray:
 
     """
@@ -143,6 +171,39 @@ def compute_valid_mask(data: xr.Dataset) -> xr.Dataset:
 
     data_mask = data.isnull().astype('int').mean('time')
     data_mask = xr.where(data_mask == 0, 1, 0)
+
+    return data_mask
+
+def compute_valid_multivariate_mask(*data: xr.Dataset) -> xr.Dataset:
+
+    """
+    Compute a mask indicating whether for each spatial point there is
+    any nan (0) or not (1) across all the Datasets provided. This
+    function collapses the time dimension.
+
+    Parameters
+    ----------
+    *data : xr.Dataset
+        Datasets to use to compute the mask.
+
+    Returns
+    -------
+    xr.Dataset
+        Mask with 1 for spatial locations with non-nans and 0 otherwise
+    """
+
+    if len(data) == 1:
+        raise ValueError('Use compute_valid_mask() instead.')
+
+    for idx, x in enumerate(data):
+        var_name =  list(x.data_vars)[0]
+        if idx == 0:
+            data_mask = compute_valid_mask(x[var_name])
+        else:
+            data_mask = data_mask + compute_valid_mask(x[var_name])
+
+    data_mask = xr.where(data_mask == len(data), 1, 0)
+    data_mask = data_mask.to_dataset(name='mask')
 
     return data_mask
 

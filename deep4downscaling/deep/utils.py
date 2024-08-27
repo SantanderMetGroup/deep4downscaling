@@ -31,6 +31,41 @@ class StandardDataset(Dataset):
         y = self.y[idx, :]
         return x, y
 
+class MultivariateDataset(Dataset):
+
+    """
+    Pytorch dataset for pairs of x and multiple y(s). The input data must be a
+    np.ndarray. This Dataset returns the predictors as the first element and the
+    multiple target as subsequent elements.
+
+    Parameters
+    ----------
+    x : np.ndarray
+        Array representing the predictor data
+
+    y : np.ndarray
+        Arrays representing the predictand data
+    """
+
+    def __init__(self, x: np.ndarray, *y: np.ndarray) -> None:
+        self.x = torch.tensor(x)
+
+        self.y_list = []
+        for elem in y: 
+            self.y_list.append(torch.tensor(elem))
+
+    def __len__(self) -> int:
+        return self.x.shape[0]
+
+    def __getitem__(self, idx: int) -> (torch.Tensor, torch.Tensor):
+        x = self.x[idx, :]
+
+        y_list = []
+        for elem in self.y_list:
+            y_list.append(elem[idx, :])
+
+        return x, *y_list
+
 def precipitation_NLL_trans(data: xr.Dataset, threshold: float) -> xr.Dataset:
     
     """
