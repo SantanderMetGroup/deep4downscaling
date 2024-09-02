@@ -130,9 +130,9 @@ class DeepESDpr(torch.nn.Module):
         Number of filters/kernels of the last convolutional layer
 
     stochastic: bool
-        If set to True, the model is composed of two final dense layers computing
-        the mean and log fo the variance. Otherwise, the models is composed of one
-        final layer computing the values.
+        If set to True, the model is composed of three final dense layers computing
+        the p, shape and scale of the Bernoulli-gamma distribution. Otherwise,
+        the models is composed of one final layer computing the values.
     """
 
 
@@ -212,13 +212,13 @@ class DeepESDpr(torch.nn.Module):
 
         return out
 
-class DeepESDElevation(torch.nn.Module):
+class DeepESDElevationTas(torch.nn.Module):
 
     """
-    DeepESD model integrating elevation data. Instead of just predicting
-    the target variable, it also predicts the elevation of the predictand
-    domain with an additional dense layer, thus being forced to learn some
-    representation of the elevation.
+    DeepESD model integrating elevation data for temperature downscaling.
+    Instead of just predicting the target variable, it also predicts the
+    elevation of the predictand domain with an additional dense layer,
+    thus being forced to learn some representation of the elevation.
 
     This elevation model is only defined for stochastic=False, otherwise the
     increase of the number of parameters would be too high.
@@ -235,13 +235,18 @@ class DeepESDElevation(torch.nn.Module):
 
     filters_last_conv : int
         Number of filters/kernels of the last convolutional layer
+
+    stochastic: bool
+        If set to True, the model is composed of two final dense layers computing
+        the mean and log fo the variance. Otherwise, the models is composed of one
+        final layer computing the values.
     """
 
 
     def __init__(self, x_shape: tuple, y_shape: tuple,
-                 filters_last_conv: int):
+                 filters_last_conv: int, stochastic: bool):
 
-        super(DeepESDElevation, self).__init__()
+        super(DeepESDElevationTas, self).__init__()
 
         if (len(x_shape) != 4) or (len(y_shape) != 2):
             error_msg =\
@@ -269,7 +274,17 @@ class DeepESDElevation(torch.nn.Module):
                                       kernel_size=3,
                                       padding=1)
 
-        self.out = torch.nn.Linear(in_features=\
+        if self.stochastic:
+            self.out_mean = torch.nn.Linear(in_features=\
+                                            self.x_shape[2] * self.x_shape[3] * self.filters_last_conv,
+                                            out_features=self.y_shape[1])
+
+            self.out_log_var = torch.nn.Linear(in_features=\
+                                               self.x_shape[2] * self.x_shape[3] * self.filters_last_conv,
+                                               out_features=self.y_shape[1])
+
+        else:
+            self.out = torch.nn.Linear(in_features=\
                                        self.x_shape[2] * self.x_shape[3] * self.filters_last_conv,
                                        out_features=self.y_shape[1])
 
@@ -290,7 +305,123 @@ class DeepESDElevation(torch.nn.Module):
 
         x = torch.flatten(x, start_dim=1)
 
-        out = self.out(x)
+        if self.stochastic:
+            mean = self.out_mean(x)
+            log_var = self.out_log_var(x)
+            out = torch.cat((mean, log_var), dim=1)
+        else:
+            out = self.out(x)
+
+        out_elev = self.elev_out(x)
+
+        return out, out_elev
+
+class DeepESDElevationPr(torch.nn.Module):
+
+    """
+    DeepESD model integrating elevation data for precipitation downscaling.
+    Instead of just predicting the target variable, it also predicts the
+    elevation of the predictand domain with an additional dense layer,
+    thus being forced to learn some representation of the elevation.
+
+    Parameters
+    ----------
+    x_shape : tuple
+        Shape of the data used as predictor. This must have dimension 4
+        (time, channels/variables, lon, lat).
+
+    y_shape : tuple
+        Shape of the data used as predictand. This must have dimension 2
+        (time, gridpoint)
+
+    filters_last_conv : int
+        Number of filters/kernels of the last convolutional layer
+
+    stochastic: bool
+        If set to True, the model is composed of three final dense layers computing
+        the p, shape and scale of the Bernoulli-gamma distribution. Otherwise,
+        the models is composed of one final layer computing the values.
+    """
+
+
+    def __init__(self, x_shape: tuple, y_shape: tuple,
+                 filters_last_conv: int, stochastic: bool):
+
+        super(DeepESDElevationPr, self).__init__()
+
+        if (len(x_shape) != 4) or (len(y_shape) != 2):
+            error_msg =\
+            'X and Y data must have a dimension of length 4'
+            'and 2, correspondingly'
+
+            raise ValueError(error_msg)
+
+        self.x_shape = x_shape
+        self.y_shape = y_shape
+        self.filters_last_conv = filters_last_conv
+        self.stochastic = stochastic
+
+        self.conv_1 = torch.nn.Conv2d(in_channels=self.x_shape[1],
+                                      out_channels=50,
+                                      kernel_size=3,
+                                      padding=1)
+
+        self.conv_2 = torch.nn.Conv2d(in_channels=50,
+                                      out_channels=25,
+                                      kernel_size=3,
+                                      padding=1)
+
+        self.conv_3 = torch.nn.Conv2d(in_channels=25,
+                                      out_channels=self.filters_last_conv,
+                                      kernel_size=3,
+                                      padding=1)
+
+        if self.stochastic:
+            self.p = torch.nn.Linear(in_features=\
+                                     self.x_shape[2] * self.x_shape[3] * self.filters_last_conv,
+                                     out_features=self.y_shape[1])
+
+            self.log_shape = torch.nn.Linear(in_features=\
+                                             self.x_shape[2] * self.x_shape[3] * self.filters_last_conv,
+                                             out_features=self.y_shape[1])
+
+            self.log_scale = torch.nn.Linear(in_features=\
+                                             self.x_shape[2] * self.x_shape[3] * self.filters_last_conv,
+                                             out_features=self.y_shape[1])
+
+        else:
+            self.out = torch.nn.Linear(in_features=\
+                                       self.x_shape[2] * self.x_shape[3] * self.filters_last_conv,
+                                       out_features=self.y_shape[1])
+
+        self.elev_out = torch.nn.Linear(in_features=\
+                                        self.x_shape[2] * self.x_shape[3] * self.filters_last_conv,
+                                        out_features=self.y_shape[1])
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+
+        x = self.conv_1(x)
+        x = torch.relu(x)
+
+        x = self.conv_2(x)
+        x = torch.relu(x)
+
+        x = self.conv_3(x)
+        x = torch.relu(x)
+
+        x = torch.flatten(x, start_dim=1)
+
+        if self.stochastic:
+            p = self.p(x)
+            p = torch.sigmoid(p)
+
+            log_shape = self.log_shape(x)
+            log_scale = self.log_scale(x)
+
+            out = torch.cat((p, log_shape, log_scale), dim = 1)
+        else:
+            out = self.out(x)
+
         out_elev = self.elev_out(x)
 
         return out, out_elev

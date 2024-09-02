@@ -1,4 +1,5 @@
 import sys
+import types
 import torch
 import numpy as np
 import xarray as xr
@@ -200,6 +201,11 @@ def compute_preds_gaussian(x_data: xr.Dataset, model: torch.nn.Module, device: s
 
     data_pred = _predict(model=model, device=device, x_data=x_data_arr)
 
+    # If the model return varios tensors, I assume the first one is the
+    # one containing the predicted parameters (e.g., elevation case)
+    if isinstance(data_pred, types.GeneratorType):
+        data_pred = list(data_pred)[0]
+
     # Get the parameters of the Gaussian dist.
     dim_target = data_pred.shape[1] // 2
     mean = data_pred[:, :dim_target]
@@ -263,6 +269,11 @@ def compute_preds_ber_gamma(x_data: xr.Dataset, model: torch.nn.Module, threshol
     time_pred = x_data['time'].values
 
     data_pred = _predict(model=model, device=device, x_data=x_data_arr)
+
+    # If the model return varios tensors, I assume the first one is the
+    # one containing the predicted parameters (e.g., elevation case)
+    if isinstance(data_pred, types.GeneratorType):
+        data_pred = list(data_pred)[0]
 
     # Get the parameters of the Bernoulli and gamma dists.
     dim_target = data_pred.shape[1] // 3
