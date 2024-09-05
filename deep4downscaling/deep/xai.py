@@ -5,7 +5,6 @@ import torch
 import numpy as np
 import tqdm
 
-sys.path.append('../')
 import deep4downscaling.trans as trans
 
 def get_position(mask: xr.Dataset, coord: tuple) -> int:

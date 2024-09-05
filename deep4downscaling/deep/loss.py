@@ -130,6 +130,7 @@ class NLLBerGammaLoss(nn.Module):
             p = p[~nans_idx]
             shape = shape[~nans_idx]
             scale = scale[~nans_idx]
+            target = target[~nans_idx]
 
         bool_rain = torch.greater(target, 0).type(torch.float32)
         epsilon = 0.000001
@@ -280,6 +281,34 @@ class Asym(nn.Module):
         np.save(file=f'{self.asym_path}/loc.npy',
                 arr=self.loc)
 
+    def mask_parameters(self, mask: xr.Dataset):
+
+        """
+        Mask the shape, scale and loc parameters. This is required for
+        models composed of a final fully-connected layer.
+
+        Parameters
+        ----------
+        mask : xr.Dataset
+            Mask without time dimension containing 1s for non-nan and
+            0 for nans.
+        """
+
+        mask_var = list(mask.keys())[0]
+        mask_dims = list(mask.dims.keys())
+
+        # If gridpoint dimension does not exist, create it
+        if 'gridpoint' not in mask_dims:
+            mask = mask.stack(gridpoint=('lat', 'lon'))
+
+        # We assume that 1 -> non-nan and 0 -> nan
+        mask_values = mask[mask_var].values
+        mask_ones = np.where(mask_values == 1)
+
+        self.shape = self.shape[mask_ones]
+        self.scale = self.scale[mask_ones]
+        self.loc = self.loc[mask_ones]
+
     def prepare_parameters(self, device: str):
 
         """
@@ -323,7 +352,9 @@ class Asym(nn.Module):
             data = data - self.loc # For scipy, loc corresponds to the mean
             data[data < 0] = 0 # Remove the negative values, which are automatically handled by scipy
             m = td.Gamma(concentration=self.shape,
-                         rate=1/self.scale)
+                         rate=1/self.scale,
+                         validate_args=False) # Deactivates the validation of the paremeters (e.g., support)
+                                              # In this way the cdf method handles nans
             cdfs = m.cdf(data)
 
         # Compute cdfs for Numpy
@@ -349,8 +380,8 @@ class Asym(nn.Module):
         if self.ignore_nans:
             nans_idx = torch.isnan(target)
             output = output[~nans_idx]
-            cdfs = cdfs[~nans_idx]
             target = target[~nans_idx]
+            cdfs = cdfs[~nans_idx]
 
         loss = torch.mean(torch.abs(target - output) + \
                           (cdfs ** 2) * torch.max(torch.tensor(0.0), target - output))

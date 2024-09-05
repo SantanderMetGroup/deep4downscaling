@@ -1,4 +1,5 @@
 import sys
+import gc
 import types
 import torch
 import numpy as np
@@ -6,7 +7,8 @@ import xarray as xr
 
 import deep4downscaling.trans as trans
 
-def _predict(model: torch.nn.Module, device: str, **data: np.ndarray) -> np.ndarray:
+def _predict(model: torch.nn.Module, device: str,
+             batch_size: int=None, **data: np.ndarray,) -> np.ndarray:
 
     """
     Internal function to compute the prediction of a certain DL model given
@@ -20,6 +22,10 @@ def _predict(model: torch.nn.Module, device: str, **data: np.ndarray) -> np.ndar
     
     device : str
         Device used to run the inference (cuda or cpu).
+
+    batch_size : int, optional
+        If provided the predictions are computed in batches of size
+        batch_size. This is useful when facing OOM errors.
 
     data : np.ndarray
         Input/Inputs to the model. There are no restrictions for the 
@@ -38,13 +44,38 @@ def _predict(model: torch.nn.Module, device: str, **data: np.ndarray) -> np.ndar
     model = model.to(device)
 
     for key, value in data.items():
-        data[key] = torch.tensor(data[key]).to(device)
+        data[key] = torch.tensor(data[key])
+    num_samples = data[key].shape[0]
 
     model.eval()
-    with torch.no_grad():
-        y_pred = model(*data.values())
 
-    if type(y_pred) is tuple: # Handle DL models returning multiple tensors
+    # No batches
+    if batch_size is None:
+        data_values = [x.to(device) for x in data.values()]
+        with torch.no_grad():
+            y_pred = model(*data_values)
+
+    # Batches
+    elif isinstance(batch_size, int):
+        with torch.no_grad():
+            for i in range(0, num_samples, batch_size):
+
+                # Compute the prediction of a specific batch
+                end_idx = min(i + batch_size, num_samples)
+                batch_data = [x[i:end_idx, :].to(device) for x in data.values()]
+                batch_pred = model(*batch_data)
+
+                # Initialize the torch accumulating all batches
+                if i == 0:
+                    # TODO: Compute predictions by batches when the model returns
+                    # multiple tensors
+                    if isinstance(batch_pred, tuple):
+                        raise ValueError('Not implemented. Set batch_size=None')
+                    y_pred = torch.zeros(num_samples, *batch_pred.shape[1:])
+
+                y_pred[i:end_idx, :] = batch_pred
+
+    if isinstance(y_pred, tuple): # Handle DL models returning multiple tensors
         y_pred = (x.cpu().numpy() for x in y_pred)
     else:
         y_pred = y_pred.cpu().numpy()
@@ -61,8 +92,8 @@ def _pred_to_xarray(data_pred: np.ndarray, time_pred: np.ndarray,
     defining where to introduce (spatial dimension) the predictions of
     the DL model, returning as output a xr.Dataset filled with the
     data_pred. This function requires the time dimension of the 
-    output xr.Dataset, which should be easily obtained as the prediction
-    of the DL model needs to be computed from anotehr xr.Dataset.
+    output xr.Dataset, which should be easily obtained from the predictor
+    of the DL model, to be computed from another xr.Dataset.
 
     Parameters
     ----------
@@ -102,7 +133,16 @@ def _pred_to_xarray(data_pred: np.ndarray, time_pred: np.ndarray,
     # Assign the perdiction to the gridpoints of the mask with value 1
     # For the 0 ones we assign them np.nan
     one_indices = (mask[var_target].values == 1)
-    mask[var_target].values[one_indices] = data_pred.flatten()
+    
+    # For fully-convolutional models, for which the prediction includes
+    # nan and non-nans values of the y_mask
+    if mask['gridpoint'].shape[0] == data_pred.shape[1]:
+        mask[var_target].values = data_pred
+    # For DeepESD-like models, for which the predictons only corresponds
+    # to the non-nan values
+    else:
+        mask[var_target].values[one_indices] = data_pred.flatten()
+    
     mask[var_target].values[~one_indices] = np.nan
 
     # Unstack and return
@@ -110,7 +150,8 @@ def _pred_to_xarray(data_pred: np.ndarray, time_pred: np.ndarray,
     return mask
 
 def compute_preds_standard(x_data: xr.Dataset, model: torch.nn.Module, device: str,
-                           var_target: str, mask: xr.Dataset) -> xr.Dataset:
+                           var_target: str, mask: xr.Dataset,
+                           batch_size: int=None) -> xr.Dataset:
 
     """
     Given some xr.Dataset with predictor data, this function returns the prediction
@@ -142,6 +183,10 @@ def compute_preds_standard(x_data: xr.Dataset, model: torch.nn.Module, device: s
         Mask with no temporal dimension formed by ones/zeros for (spatial)
         positions to introduce data_pred/np.nans values.
 
+    batch_size : int, optional
+        If provided the predictions are computed in batches of size
+        batch_size. This is useful when facing OOM errors.
+
     Returns
     -------
     xr.Dataset
@@ -151,14 +196,16 @@ def compute_preds_standard(x_data: xr.Dataset, model: torch.nn.Module, device: s
     x_data_arr = trans.xarray_to_numpy(x_data)
     time_pred = x_data['time'].values
 
-    data_pred = _predict(model=model, device=device, x_data=x_data_arr)
+    data_pred = _predict(model=model, device=device, x_data=x_data_arr,
+                         batch_size=batch_size)
     data_pred = _pred_to_xarray(data_pred=data_pred, time_pred=time_pred,
                                 var_target=var_target, mask=mask)
 
     return data_pred
 
 def compute_preds_gaussian(x_data: xr.Dataset, model: torch.nn.Module, device: str,
-                           var_target: str, mask: xr.Dataset) -> xr.Dataset:
+                           var_target: str, mask: xr.Dataset,
+                           batch_size: int=None) -> xr.Dataset:
 
     """
     Given some xr.Dataset with predictor data, this function returns the prediction
@@ -190,6 +237,10 @@ def compute_preds_gaussian(x_data: xr.Dataset, model: torch.nn.Module, device: s
         Mask with no temporal dimension formed by ones/zeros for (spatial)
         positions to introduce data_pred/np.nans values.
 
+    batch_size : int, optional
+        If provided the predictions are computed in batches of size
+        batch_size. This is useful when facing OOM errors.
+
     Returns
     -------
     xr.Dataset
@@ -199,7 +250,8 @@ def compute_preds_gaussian(x_data: xr.Dataset, model: torch.nn.Module, device: s
     x_data_arr = trans.xarray_to_numpy(x_data)
     time_pred = x_data['time'].values
 
-    data_pred = _predict(model=model, device=device, x_data=x_data_arr)
+    data_pred = _predict(model=model, device=device, x_data=x_data_arr,
+                         batch_size=batch_size)
 
     # If the model return varios tensors, I assume the first one is the
     # one containing the predicted parameters (e.g., elevation case)
@@ -221,7 +273,8 @@ def compute_preds_gaussian(x_data: xr.Dataset, model: torch.nn.Module, device: s
     return data_pred
 
 def compute_preds_ber_gamma(x_data: xr.Dataset, model: torch.nn.Module, threshold: float,
-                            device: str, var_target: str, mask: xr.Dataset) -> xr.Dataset:
+                            device: str, var_target: str, mask: xr.Dataset,
+                            batch_size: int=None) -> xr.Dataset:
 
     """
     Given some xr.Dataset with predictor data, this function returns the prediction
@@ -259,6 +312,10 @@ def compute_preds_ber_gamma(x_data: xr.Dataset, model: torch.nn.Module, threshol
         Mask with no temporal dimension formed by ones/zeros for (spatial)
         positions to introduce data_pred/np.nans values.
 
+    batch_size : int, optional
+        If provided the predictions are computed in batches of size
+        batch_size. This is useful when facing OOM errors.
+
     Returns
     -------
     xr.Dataset
@@ -268,7 +325,11 @@ def compute_preds_ber_gamma(x_data: xr.Dataset, model: torch.nn.Module, threshol
     x_data_arr = trans.xarray_to_numpy(x_data)
     time_pred = x_data['time'].values
 
-    data_pred = _predict(model=model, device=device, x_data=x_data_arr)
+    data_pred = _predict(model=model, device=device, x_data=x_data_arr,
+                         batch_size=batch_size)
+
+    # Free some memory
+    del x_data_arr; gc.collect()
 
     # If the model return varios tensors, I assume the first one is the
     # one containing the predicted parameters (e.g., elevation case)
@@ -281,12 +342,19 @@ def compute_preds_ber_gamma(x_data: xr.Dataset, model: torch.nn.Module, threshol
     shape = np.exp(data_pred[:, dim_target:(dim_target*2)])
     scale = np.exp(data_pred[:, (dim_target*2):])
 
+    # Free some memory
+    del data_pred; gc.collect()
+
     # Compute the ocurrence
     p_random = np.random.uniform(0, 1, p.shape)
     ocurrence = (p >= p_random) * 1 
 
     # Compute the amount
     amount = np.random.gamma(shape=shape, scale=scale)
+
+    # Free some memory
+    del p; del shape; del scale; del p_random
+    gc.collect()
 
     # Correct the amount
     epsilon = 1e-06
@@ -296,115 +364,11 @@ def compute_preds_ber_gamma(x_data: xr.Dataset, model: torch.nn.Module, threshol
     # Combine ocurrence and amount
     data_pred_final = ocurrence * amount
 
+    # Free some memory
+    del ocurrence; del amount
+    gc.collect()
+
     data_pred = _pred_to_xarray(data_pred=data_pred_final, time_pred=time_pred,
                                 var_target=var_target, mask=mask)
 
     return data_pred
-
-def compute_preds_elevation(x_data: xr.Dataset, model: torch.nn.Module, device: str,
-                            var_target: str, mask: xr.Dataset) -> xr.Dataset:
-
-    """
-    Given some xr.Dataset with predictor data, this function returns the prediction
-    of the DL model (in the proper format) given x_data as input, thus ignoring the
-    elevation returned by the model. This function is designed to work with models
-    computing the final prediction (e.g., MSE-based models). 
-
-    Notes
-    -----
-    For this function the mask is key, as it allows to convert the raw output of
-    the model to the proper xr.Dataset representation.
-
-    Parameters
-    ----------
-    x_data : xr.Dataset
-        Predictors to pass as input to the DL model. They must have a spatial
-        (lat and lon) and temporal dimension.
-
-    model : torch.nn.Module
-        Pytorch model to use.
-
-    device : str
-        Device used to run the inference (cuda or cpu).
-
-    var_target : str
-        Target variable.
-
-    mask : xr.Dataset
-        Mask with no temporal dimension formed by ones/zeros for (spatial)
-        positions to introduce data_pred/np.nans values.
-
-    Returns
-    -------
-    xr.Dataset
-        The final prediction (target variable)
-    """
-    
-    x_data_arr = trans.xarray_to_numpy(x_data)
-    time_pred = x_data['time'].values
-
-    data_pred, _ = _predict(model=model, device=device, x_data=x_data_arr)
-    data_pred = _pred_to_xarray(data_pred=data_pred, time_pred=time_pred,
-                                var_target=var_target, mask=mask)
-
-    return data_pred
-
-def compute_preds_multivariable(x_data: xr.Dataset, model: torch.nn.Module, device: str,
-                                vars_target: tuple, mask: xr.Dataset) -> xr.Dataset:
-    
-    """
-    Compute the prediction for model on x_data and the variables specified in vars_target.
-    The model passed needs to be multivariable, thus computing the prediction for more than
-    one variable. It is important for the order of vars_target to be the same as that of the
-    returned predictions.
-
-    Notes
-    -----
-    For this function the mask is key, as it allows to convert the raw output of
-    the model to the proper xr.Dataset representation. In this case, as the mask
-    has been probably computed with deep4downscaling.trans.compute_valid_multivariate_mask
-    the function cheks for the mask name of the DataArray.
-
-    Parameters
-    ----------
-    x_data : xr.Dataset
-        Predictors to pass as input to the DL model. They must have a spatial
-        (lat and lon) and temporal dimension.
-
-    model : torch.nn.Module
-        Pytorch model to use.
-
-    device : str
-        Device used to run the inference (cuda or cpu).
-
-    vars_target : tuple
-        Tuple containing the variables to predict.
-
-    mask : xr.Dataset
-        Mask with no temporal dimension formed by ones/zeros for (spatial)
-        positions to introduce data_pred/np.nans values.
-
-    Returns
-    -------
-    xr.Dataset
-        A dataset for each of the target variables.
-    """
-
-    x_data_arr = trans.xarray_to_numpy(x_data)
-    time_pred = x_data['time'].values
-
-    data_pred = _predict(model=model, device=device, x_data=x_data_arr)
-    data_pred = list(data_pred)
-
-    final_vars = []
-    for idx, var in enumerate(vars_target):
-        try:
-            var_pred = _pred_to_xarray(data_pred=data_pred[idx], time_pred=time_pred,
-                                        var_target=var, mask=mask)
-        except KeyError: 
-            var_pred = _pred_to_xarray(data_pred=data_pred[idx], time_pred=time_pred,
-                                        var_target='mask', mask=mask)
-            var_pred = var_pred.rename({'mask': var})
-        final_vars.append(var_pred)
-
-    return *final_vars, 
