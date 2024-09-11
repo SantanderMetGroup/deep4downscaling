@@ -194,6 +194,11 @@ def compute_preds_standard(x_data: xr.Dataset, model: torch.nn.Module, device: s
     """
     
     x_data_arr = trans.xarray_to_numpy(x_data)
+
+    # Add channel dimension for one=dimensional predictors
+    if len(list(x_data.keys())) <= 1:
+        x_data_arr = x_data_arr[:, None, :, :] # Add empty channel dimension
+
     time_pred = x_data['time'].values
 
     data_pred = _predict(model=model, device=device, x_data=x_data_arr,
