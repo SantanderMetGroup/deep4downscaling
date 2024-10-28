@@ -1,5 +1,6 @@
 import xarray as xr
-import xskillscore
+import numpy as np
+import xskillscore as xss
 
 def _filter_by_season(data : xr.Dataset, season : str) -> xr.Dataset:
 
@@ -990,3 +991,123 @@ def bias_corr_compound(target_1: xr.Dataset, target_2: xr.Dataset,
     metric = pred_corr - target_corr
     
     return metric
+
+def crps_ensemble(target: xr.Dataset, pred: xr.Dataset,
+                  var_target: str, max_pooling: int=None,
+                  season: str=None) -> xr.Dataset:
+
+    """
+    Compute the Continuous Ranked Probability Score (CRPS) for a set of
+    members from an ensemble (pred) with respect to an unique target
+    forecast (pred).
+
+    Parameters
+    ----------
+    target : xr.Dataset
+        Ground truth data.
+
+    pred : xr.Dataset
+        Predicted data. It needs to contain the member dimension
+        with all the different members composing the ensemble
+
+    var_target : str
+        Target variable.
+
+    max_pooling : int
+        The maximum pooling to perform over the data before computing
+        the CRPS (e.g., 4). If left empty no maximum pooling is applied.
+        Max pooling is applied to compute the CRPS following
+        (Harris, L. et al., 2022)
+
+        Harris, L., McRae, A. T., Chantry, M., Dueben, P. D., & Palmer,
+        T. N. (2022). A generative deep learning approach to stochastic
+        downscaling of precipitation forecasts. Journal of Advances in
+        Modeling Earth Systems, 14(10)
+
+    season : str
+        Season to filter. If passes as None, no filtering is
+        applied.
+
+    Returns
+    -------
+    xr.Dataset
+    """
+
+    target = _filter_by_season(target, season)
+    pred = _filter_by_season(pred, season)
+
+    if max_pooling:
+        target = target.coarsen(lat=max_pooling, lon=max_pooling,
+                                boundary='trim').max()
+        pred = pred.coarsen(lat=max_pooling, lon=max_pooling,
+                            boundary='trim').max('member')
+
+    metric = xss.crps_ensemble(observations=target,
+                               forecasts=pred,
+                               dim='time')
+
+    return metric
+
+def normalized_rank(target: xr.Dataset, pred: xr.Dataset,
+                    var_target: str, threshold: int=None,
+                    season: str=None) -> xr.Dataset:
+
+    """
+    Compute the Normalized Rank as implemented in
+    (Harris, L. et al., 2022)
+
+    Parameters
+    ----------
+    target : xr.Dataset
+        Ground truth data. 
+
+    pred : xr.Dataset
+        Predicted data. It needs to contain the member dimension
+        with all the different members composing the ensemble
+
+    var_target : str
+        Target variable.
+
+    max_pooling : int
+        The maximum pooling to perform over the data before computing
+        the CRPS (e.g., 4). If left empty no maximum pooling is applied.
+        Max pooling is applied to compute the CRPS following
+        (Harris, L. et al., 2022)
+
+        Harris, L., McRae, A. T., Chantry, M., Dueben, P. D., & Palmer,
+        T. N. (2022). A generative deep learning approach to stochastic
+        downscaling of precipitation forecasts. Journal of Advances in
+        Modeling Earth Systems, 14(10)
+
+    season : str
+        Season to filter. If passes as None, no filtering is
+        applied.
+
+    Returns
+    -------
+    xr.Dataset
+    """
+
+    target = _filter_by_season(target, season)
+    pred = _filter_by_season(pred, season)
+
+    # Compute the nan_mask of the pred
+    nan_mask = pred.mean('time').mean('member')
+    nan_mask = (nan_mask - nan_mask) + 1
+
+    if 'member' not in list(pred.dims):
+        raise ValueError('Please provide a pred with a member dimension')
+
+    # Compute metric
+    metric = (pred <= target)
+
+    if threshold:
+        mask_threshold = (target > threshold)
+        mask_threshold = mask_threshold.expand_dims(member=pred.dims['member'])
+        metric = metric.where(mask_threshold)
+
+    metric = metric.mean('member')
+    metric = metric * nan_mask
+
+    return metric
+

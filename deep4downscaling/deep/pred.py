@@ -151,6 +151,7 @@ def _pred_to_xarray(data_pred: np.ndarray, time_pred: np.ndarray,
 
 def compute_preds_standard(x_data: xr.Dataset, model: torch.nn.Module, device: str,
                            var_target: str, mask: xr.Dataset,
+                           ensemble_size: int=None,
                            batch_size: int=None) -> xr.Dataset:
 
     """
@@ -183,6 +184,11 @@ def compute_preds_standard(x_data: xr.Dataset, model: torch.nn.Module, device: s
         Mask with no temporal dimension formed by ones/zeros for (spatial)
         positions to introduce data_pred/np.nans values.
 
+    ensemble_size : int, optional
+        If provided, it indicates the number of samples computed by running
+        the model ensemble_size times. These are saved as a new dimension in
+        the xr.Dataset (member).
+
     batch_size : int, optional
         If provided the predictions are computed in batches of size
         batch_size. This is useful when facing OOM errors.
@@ -193,23 +199,37 @@ def compute_preds_standard(x_data: xr.Dataset, model: torch.nn.Module, device: s
         The final prediction
     """
     
+    if not ensemble_size:
+        ensemble_size = 1
+
     x_data_arr = trans.xarray_to_numpy(x_data)
 
-    # Add channel dimension for one=dimensional predictors
+    # Add channel dimension for one-dimensional predictors
     if len(list(x_data.keys())) <= 1:
         x_data_arr = x_data_arr[:, None, :, :] # Add empty channel dimension
 
     time_pred = x_data['time'].values
 
-    data_pred = _predict(model=model, device=device, x_data=x_data_arr,
-                         batch_size=batch_size)
-    data_pred = _pred_to_xarray(data_pred=data_pred, time_pred=time_pred,
-                                var_target=var_target, mask=mask)
+    # Compute and concatenate ensemble_size predictions
+    data_pred = []
+    for _ in range(ensemble_size):
+        data_aux = _predict(model=model, device=device, x_data=x_data_arr,
+                            batch_size=batch_size)
+        data_aux = _pred_to_xarray(data_pred=data_aux, time_pred=time_pred,
+                                    var_target=var_target, mask=mask)
+        data_pred.append(data_aux)
 
-    return data_pred
+    # Return the Dataset
+    if ensemble_size == 1:
+        data_final = data_pred[0]
+    else:
+        data_final = xr.concat(data_pred, dim='member')
+
+    return data_final
 
 def compute_preds_gaussian(x_data: xr.Dataset, model: torch.nn.Module, device: str,
                            var_target: str, mask: xr.Dataset,
+                           ensemble_size: int=None,
                            batch_size: int=None) -> xr.Dataset:
 
     """
@@ -242,6 +262,11 @@ def compute_preds_gaussian(x_data: xr.Dataset, model: torch.nn.Module, device: s
         Mask with no temporal dimension formed by ones/zeros for (spatial)
         positions to introduce data_pred/np.nans values.
 
+    ensemble_size : int, optional
+        If provided, it indicates the number of samples computed by running
+        the model ensemble_size times. These are saved as a new dimension in
+        the xr.Dataset (member).
+
     batch_size : int, optional
         If provided the predictions are computed in batches of size
         batch_size. This is useful when facing OOM errors.
@@ -252,6 +277,9 @@ def compute_preds_gaussian(x_data: xr.Dataset, model: torch.nn.Module, device: s
         The final prediction
     """
     
+    if not ensemble_size:
+        ensemble_size = 1
+
     x_data_arr = trans.xarray_to_numpy(x_data)
     time_pred = x_data['time'].values
 
@@ -267,18 +295,27 @@ def compute_preds_gaussian(x_data: xr.Dataset, model: torch.nn.Module, device: s
     dim_target = data_pred.shape[1] // 2
     mean = data_pred[:, :dim_target]
     log_var = data_pred[:, dim_target:]
+    s_dev = np.exp(log_var) ** (1/2)
 
     # Compute the prediction
-    s_dev = np.exp(log_var) ** (1/2)
-    data_pred_final = np.random.normal(loc=mean, scale=s_dev)
+    data_pred = []
+    for _ in range(ensemble_size):    
+        data_aux = np.random.normal(loc=mean, scale=s_dev)
+        data_aux = _pred_to_xarray(data_pred=data_aux, time_pred=time_pred,
+                                   var_target=var_target, mask=mask)
+        data_pred.append(data_aux)
 
-    data_pred = _pred_to_xarray(data_pred=data_pred_final, time_pred=time_pred,
-                                var_target=var_target, mask=mask)
+    # Return the Dataset
+    if ensemble_size == 1:
+        data_final = data_pred[0]
+    else:
+        data_final = xr.concat(data_pred, dim='member')
 
     return data_pred
 
 def compute_preds_ber_gamma(x_data: xr.Dataset, model: torch.nn.Module, threshold: float,
                             device: str, var_target: str, mask: xr.Dataset,
+                            ensemble_size: int=None,
                             batch_size: int=None) -> xr.Dataset:
 
     """
@@ -317,6 +354,11 @@ def compute_preds_ber_gamma(x_data: xr.Dataset, model: torch.nn.Module, threshol
         Mask with no temporal dimension formed by ones/zeros for (spatial)
         positions to introduce data_pred/np.nans values.
 
+    ensemble_size : int, optional
+        If provided, it indicates the number of samples computed by running
+        the model ensemble_size times. These are saved as a new dimension in
+        the xr.Dataset (member).
+
     batch_size : int, optional
         If provided the predictions are computed in batches of size
         batch_size. This is useful when facing OOM errors.
@@ -326,6 +368,9 @@ def compute_preds_ber_gamma(x_data: xr.Dataset, model: torch.nn.Module, threshol
     xr.Dataset
         The final prediction
     """
+
+    if not ensemble_size:
+        ensemble_size = 1
 
     x_data_arr = trans.xarray_to_numpy(x_data)
     time_pred = x_data['time'].values
@@ -350,30 +395,45 @@ def compute_preds_ber_gamma(x_data: xr.Dataset, model: torch.nn.Module, threshol
     # Free some memory
     del data_pred; gc.collect()
 
-    # Compute the ocurrence
-    p_random = np.random.uniform(0, 1, p.shape)
-    ocurrence = (p >= p_random) * 1 
+    # Iterate over ensemble members
+    data_pred = []
+    for _ in range(ensemble_size):
 
-    # Compute the amount
-    amount = np.random.gamma(shape=shape, scale=scale)
+        # Compute the ocurrence
+        p_random = np.random.uniform(0, 1, p.shape)
+        ocurrence = (p >= p_random) * 1 
+
+        # Free some memory
+        del p_random; gc.collect()
+
+        # Compute the amount
+        amount = np.random.gamma(shape=shape, scale=scale)
+
+        # Correct the amount
+        epsilon = 1e-06
+        threshold = threshold - epsilon
+        amount = amount + threshold
+
+        # Combine ocurrence and amount
+        data_aux = ocurrence * amount
+
+        # Free some memory
+        del ocurrence; del amount
+        gc.collect()
+
+        data_aux = _pred_to_xarray(data_pred=data_aux, time_pred=time_pred,
+                                   var_target=var_target, mask=mask)
+
+        data_pred.append(data_aux)
 
     # Free some memory
-    del p; del shape; del scale; del p_random
+    del p; del shape; del scale
     gc.collect()
 
-    # Correct the amount
-    epsilon = 1e-06
-    threshold = threshold - epsilon
-    amount = amount + threshold
+    # Return the Dataset
+    if ensemble_size == 1:
+        data_final = data_pred[0]
+    else:
+        data_final = xr.concat(data_pred, dim='member')
 
-    # Combine ocurrence and amount
-    data_pred_final = ocurrence * amount
-
-    # Free some memory
-    del ocurrence; del amount
-    gc.collect()
-
-    data_pred = _pred_to_xarray(data_pred=data_pred_final, time_pred=time_pred,
-                                var_target=var_target, mask=mask)
-
-    return data_pred
+    return data_final
