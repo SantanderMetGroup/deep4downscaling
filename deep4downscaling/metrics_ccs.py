@@ -63,7 +63,7 @@ def compute_ccs(hist_data: xr.Dataset, fut_data: xr.Dataset,
     relative : bool
         Whether to compute the absolute (False) or relative
         CCs.
-`
+
     Note
     ----
     The CCs must be computed over variables with the same

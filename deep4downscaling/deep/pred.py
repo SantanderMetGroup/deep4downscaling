@@ -149,8 +149,62 @@ def _pred_to_xarray(data_pred: np.ndarray, time_pred: np.ndarray,
     mask = mask.unstack()
     return mask
 
+def _pred_stations_to_xarray(data_pred: np.ndarray, time_pred: np.ndarray,
+                             var_target: str, template: xr.Dataset) -> xr.Dataset:
+
+    """
+    This internal function transforms the prediction from a DL model
+    (np.ndarray) into a xr.Dataset with the corresponding temporal and
+    station dimensions. To do so it creates an empty xr.Dataset (across)
+    the time dimension and fill the values with the predictiones returned
+    by the DL model. This function can handle additional variables such
+    as the station indices/names.
+
+    Parameters
+    ----------
+    data_pred : np.ndarray
+        Predictions of a DL model. Generally these are computed using the
+        _predict internal function.
+
+    time_pred : np.ndarray
+        Array containing the temporal coordinated of the output xr.Dataset
+        (in datetime64[ns]).
+
+    var_target: str
+        Target variable.
+
+    template: xr.Dataset
+        Template with no temporal dimension.
+
+    Returns
+    -------
+    xr.Dataset
+        The data_pred argument properly transformed to xr.Dataset.
+    """
+
+    # Ignore other dims (e.g., station info)
+    template_var = template[var_target] 
+
+    # Expand the template in the time dimension of the final prediction
+    template_var = template_var.expand_dims(time=time_pred)
+    template_var = template_var.ffill(dim='time')
+
+    # For DeepESD-like models, for which the predictons only corresponds
+    # to the non-nan values
+    template_var.values = data_pred
+
+    # Add created variable as well as ignored ones
+    for var_name in template.data_vars:
+        if var_name == var_target:
+            template = template.assign({var_name: template_var})
+        else:
+            template = template.assign({var_name: template[var_name]})
+
+    return template
+
 def compute_preds_standard(x_data: xr.Dataset, model: torch.nn.Module, device: str,
-                           var_target: str, mask: xr.Dataset,
+                           var_target: str,
+                           mask: xr.Dataset=None, template: xr.Dataset=None,
                            ensemble_size: int=None,
                            batch_size: int=None) -> xr.Dataset:
 
@@ -162,8 +216,11 @@ def compute_preds_standard(x_data: xr.Dataset, model: torch.nn.Module, device: s
 
     Notes
     -----
-    For this function the mask is key, as it allows to convert the raw output of
-    the model to the proper xr.Dataset representation.
+    This function relies on the mask or template as a key input to convert the
+    raw model output into a properly formatted xr.Dataset. The mask is used for
+    gridded data, while the template is used for station-based data. The argument
+    provided determines the function's internal behavior. Only one of these inputs
+    should be supplied; providing none/both will result in an error.
 
     Parameters
     ----------
@@ -183,6 +240,10 @@ def compute_preds_standard(x_data: xr.Dataset, model: torch.nn.Module, device: s
     mask : xr.Dataset
         Mask with no temporal dimension formed by ones/zeros for (spatial)
         positions to introduce data_pred/np.nans values.
+
+    template : xr.Dataset
+        Mask with no temporal dimension used as basis for building the 
+        final xr.Dataset for stations-based data.
 
     ensemble_size : int, optional
         If provided, it indicates the number of samples computed by running
@@ -204,6 +265,12 @@ def compute_preds_standard(x_data: xr.Dataset, model: torch.nn.Module, device: s
 
     x_data_arr = trans.xarray_to_numpy(x_data)
 
+    # Check for the mask and template
+    if mask and template:
+        raise ValueError('Provide either a mask or a template.')
+    if (not mask) and (not template):
+        raise ValueError('Provide either a mask or a template, not both.')
+
     # Add channel dimension for one-dimensional predictors
     if len(list(x_data.keys())) <= 1:
         x_data_arr = x_data_arr[:, None, :, :] # Add empty channel dimension
@@ -215,8 +282,12 @@ def compute_preds_standard(x_data: xr.Dataset, model: torch.nn.Module, device: s
     for _ in range(ensemble_size):
         data_aux = _predict(model=model, device=device, x_data=x_data_arr,
                             batch_size=batch_size)
-        data_aux = _pred_to_xarray(data_pred=data_aux, time_pred=time_pred,
-                                    var_target=var_target, mask=mask)
+        if mask:
+            data_aux = _pred_to_xarray(data_pred=data_aux, time_pred=time_pred,
+                                       var_target=var_target, mask=mask)
+        elif template:
+            data_aux = _pred_stations_to_xarray(data_pred=data_aux, time_pred=time_pred,
+                                                var_target=var_target, template=template)
         data_pred.append(data_aux)
 
     # Return the Dataset

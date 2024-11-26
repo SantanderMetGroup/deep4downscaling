@@ -171,6 +171,11 @@ class Asym(nn.Module):
     asym_path : str
         Path to the folder to save the fitted distributions.
 
+    appendix : str, optional
+        String to add to the files generated/loaded for this loss function.
+        (e.g., appendix=test1 -> scale_test1.npy). If not provided no appendix
+        will be added.
+
     target : torch.Tensor
         Target/ground-truth data
 
@@ -180,10 +185,12 @@ class Asym(nn.Module):
         variance.
     """
 
-    def __init__(self, ignore_nans: bool, asym_path: str) -> None:
+    def __init__(self, ignore_nans: bool, asym_path: str,
+                 appendix: str=None) -> None:
         super(Asym, self).__init__()
         self.ignore_nans = ignore_nans
         self.asym_path = asym_path
+        self.appendix = appendix
 
     def parameters_exist(self):
 
@@ -191,9 +198,19 @@ class Asym(nn.Module):
         Check for the existence of the gamma distributions
         """
 
-        shape_exist = os.path.exists(f'{self.asym_path}/shape.npy')
-        scale_exist = os.path.exists(f'{self.asym_path}/scale.npy')
-        loc_exist = os.path.exists(f'{self.asym_path}/loc.npy')
+        if self.appendix:
+            shape_file_name = f'shape_{self.appendix}.npy'
+            scale_file_name = f'scale_{self.appendix}.npy'
+            loc_file_name = f'loc_{self.appendix}.npy'
+        else:
+            shape_file_name = 'shape.npy'
+            scale_file_name = 'scale.npy'
+            loc_file_name = 'loc.npy'
+
+        shape_exist = os.path.exists(f'{self.asym_path}/{shape_file_name}')
+        scale_exist = os.path.exists(f'{self.asym_path}/{scale_file_name}')
+        loc_exist = os.path.exists(f'{self.asym_path}/{loc_file_name}')
+
         return (shape_exist and scale_exist and loc_exist)
 
     def load_parameters(self):
@@ -202,9 +219,18 @@ class Asym(nn.Module):
         Load the gamma distributions from asym_path.
         """
 
-        self.shape = np.load(f'{self.asym_path}/shape.npy')
-        self.scale = np.load(f'{self.asym_path}/scale.npy')
-        self.loc = np.load(f'{self.asym_path}/loc.npy')
+        if self.appendix:
+            shape_file_name = f'shape_{self.appendix}.npy'
+            scale_file_name = f'scale_{self.appendix}.npy'
+            loc_file_name = f'loc_{self.appendix}.npy'
+        else:
+            shape_file_name = 'shape.npy'
+            scale_file_name = 'scale.npy'
+            loc_file_name = 'loc.npy'
+
+        self.shape = np.load(f'{self.asym_path}/{shape_file_name}')
+        self.scale = np.load(f'{self.asym_path}/{scale_file_name}')
+        self.loc = np.load(f'{self.asym_path}/{loc_file_name}')
 
     def _compute_gamma_parameters(self, x: np.ndarray) -> tuple:
 
@@ -274,11 +300,20 @@ class Asym(nn.Module):
         self.loc = gamma_params[1, :]
 
         # Save the parameters in the asym_path
-        np.save(file=f'{self.asym_path}/shape.npy',
+        if self.appendix:
+            shape_file_name = f'shape_{self.appendix}.npy'
+            scale_file_name = f'scale_{self.appendix}.npy'
+            loc_file_name = f'loc_{self.appendix}.npy'
+        else:
+            shape_file_name = 'shape.npy'
+            scale_file_name = 'scale.npy'
+            loc_file_name = 'loc.npy'
+
+        np.save(file=f'{self.asym_path}/{shape_file_name}',
                 arr=self.shape)
-        np.save(file=f'{self.asym_path}/scale.npy',
+        np.save(file=f'{self.asym_path}/{scale_file_name}',
                 arr=self.scale)
-        np.save(file=f'{self.asym_path}/loc.npy',
+        np.save(file=f'{self.asym_path}/{loc_file_name}',
                 arr=self.loc)
 
     def mask_parameters(self, mask: xr.Dataset):

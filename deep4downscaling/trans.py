@@ -123,7 +123,7 @@ def undo_standardization(data_ref: xr.Dataset, data: xr.Dataset) -> xr.Dataset:
 
     return data_undo_stand
 
-def xarray_to_numpy(data: xr.Dataset) -> np.ndarray:
+def xarray_to_numpy(data: xr.Dataset, ignore_vars: list[str]=None) -> np.ndarray:
 
     """
     Converts a xr.Dataset to np.ndarray by relying on to_numpy()
@@ -134,6 +134,11 @@ def xarray_to_numpy(data: xr.Dataset) -> np.ndarray:
     data : xr.Dataset
         Data to convert
 
+    ignore_vars : list[str]
+        Variables to ignore during the conversion. The returned 
+        numpy array will not include these variables. By default
+        is NOne so no variable will be ignored.
+
     Returns
     -------
     np.ndarray
@@ -142,6 +147,9 @@ def xarray_to_numpy(data: xr.Dataset) -> np.ndarray:
 
     final_data = []
     data_vars = [i for i in data.data_vars]
+    if ignore_vars:
+        data_vars = [i for i in data.data_vars if i not in ignore_vars]
+
     for var_convert in data_vars:
         final_data.append(data[var_convert].to_numpy())
 
