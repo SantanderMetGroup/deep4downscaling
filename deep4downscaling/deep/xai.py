@@ -7,11 +7,12 @@ import tqdm
 
 import deep4downscaling.trans as trans
 
-def get_position(mask: xr.Dataset, coord: tuple) -> int:
+def get_grid_position(mask: xr.Dataset, coord: tuple) -> int:
 
     """
     This function returns the index in the output of the DL model
-    corresponding to coord.
+    corresponding to coord. This function is employed when the mask
+    dataset has latitude and longitude dimensions (grid).
 
     Parameters
     ----------
@@ -49,6 +50,39 @@ def get_position(mask: xr.Dataset, coord: tuple) -> int:
     index = mask_stack_filt['gridpoint'].get_index('gridpoint').get_loc(coords_to_index)   
 
     return index
+
+def get_station_position(mask: xr.Dataset, coord:tuple) -> int:
+
+    """
+    This function returns the index in the output of the DL model
+    corresponding to coord. This function is employed when the mask
+    dataset has only one dimension (stations).
+
+    Parameters
+    ----------
+    mask : xr.Dataset
+        Dataset with no time dimension. In this case, the name of
+        the data variable is irrelevant.
+
+    coord : tuple
+        A tuple (latitude, longitude) used to extract the index of the
+        closest point to the specified coord.
+
+    Returns
+    -------
+    int
+        Index corresponding to coord.
+    """
+
+    delta_lat = mask['lat'] - coord[0]
+    delta_lon = mask['lon'] - coord[1]
+
+    distance = np.sqrt(delta_lat**2 + delta_lon**2)
+
+    idx = distance.argmin()
+    idx = idx.item()
+
+    return idx
 
 def postprocess_saliency_torch(saliency: torch.tensor,
                                noise_threshold: float) -> torch.tensor:
@@ -153,7 +187,15 @@ def compute_ism(data: xr.Dataset, mask: xr.Dataset,
     model = model.to(device)
 
     # Get the index of the output to interpret
-    index = get_position(mask=mask, coord=coord)
+    if ('lat' in mask.dims) and ('lon' in mask.dims): # Grid
+        index = get_grid_position(mask=mask, coord=coord)
+    elif len(mask.dims) == 1: # Stations
+        index = get_station_position(mask=mask, coord=coord)
+    else:
+        msg_error = """Please provide a mask with either latitude (lat) and
+            longitude (lon) coordinates (for station data) or a single coordinate
+            corresponding to the stations (station data)."""
+        raise ValueError(msg_error)
 
     # Move data to torch
     data_tensor = trans.xarray_to_numpy(data)
@@ -253,9 +295,18 @@ def compute_asm(data: xr.Dataset, mask: xr.Dataset,
     time_span, num_channels, spatial_dim_1, spatial_dim_2 = data_tensor.shape # Name the dimensions
 
     # We get the number of output gridpoints from the mask
-    mask_stack = mask.stack(gridpoint=('lat', 'lon'))
-    mask_stack_filt = mask_stack.where(mask_stack==1, drop=True)
-    num_gridpoints = len(mask_stack_filt['gridpoint'].values)
+    if ('lat' in mask.dims) and ('lon' in mask.dims): # Grid
+        mask_stack = mask.stack(gridpoint=('lat', 'lon'))
+        mask_stack_filt = mask_stack.where(mask_stack==1, drop=True)
+        num_gridpoints = len(mask_stack_filt['gridpoint'].values)
+    elif len(mask.dims) == 1: # Stations
+        idx_dim = list(mask.dims)[0]
+        num_gridpoints = len(mask[idx_dim])
+    else:
+        msg_error = """Please provide a mask with either latitude (lat) and
+            longitude (lon) coordinates (for station data) or a single coordinate
+            corresponding to the stations (station data)."""
+        raise ValueError(msg_error)
 
     # We create an empty torch.tensor to store the ASMs 
     asm_values = torch.zeros(data_tensor.shape).to(device)
@@ -380,7 +431,7 @@ def haversine_distance(predictor_lats: np.ndarray, predictor_lons: np.ndarray,
 
     return haversine_values  
 
-def compute_sdm(data: xr.Dataset, mask: xr.Dataset,
+def compute_sdm(data: xr.Dataset, mask: xr.Dataset, var_target: str,
                 model: torch.nn.Module, device: str,
                 xai_method: captum.attr, batch_size: int,
                 postprocess: bool, noise_threshold: float=0.1) -> xr.Dataset:
@@ -414,7 +465,13 @@ def compute_sdm(data: xr.Dataset, mask: xr.Dataset,
     mask : xr.Dataset
         Dataset with no time dimension and latitude and longitude
         coordinates with 1 for valid gridpoints and 0 otherwise.
-        In this case, the name of the data variable is irrelevant.
+
+    var_target : str
+        Variable to interpret. Despite being required, this argument is 
+        useful when working with station-based data, for which other
+        variables (e.g., station id) may be included in the mask. This
+        argument is only required for the SDM as we need to fill the 
+        appropiate variable in the mask.
 
     model : torch.nn.Module
         Pytorch model to be interpreted.
@@ -454,9 +511,18 @@ def compute_sdm(data: xr.Dataset, mask: xr.Dataset,
     time_span, num_channels, spatial_dim_1, spatial_dim_2 = data_tensor.shape # Name the dimensions
 
     # Get the number of output gridpoints from the mask
-    mask_stack = mask.stack(gridpoint=('lat', 'lon'))
-    mask_stack_filt = mask_stack.where(mask_stack==1, drop=True)
-    num_gridpoints = len(mask_stack_filt['gridpoint'].values)
+    if ('lat' in mask.dims) and ('lon' in mask.dims): # Grid
+        mask_stack = mask.stack(gridpoint=('lat', 'lon'))
+        mask_stack_filt = mask_stack.where(mask_stack==1, drop=True)
+        num_gridpoints = len(mask_stack_filt['gridpoint'].values)
+    elif len(mask.dims) == 1: # Stations
+        idx_dim = list(mask.dims)[0]
+        num_gridpoints = len(mask[idx_dim])
+    else:
+        msg_error = """Please provide a mask with either latitude (lat) and
+            longitude (lon) coordinates (for station data) or a single coordinate
+            corresponding to the stations (station data)."""
+        raise ValueError(msg_error)
 
     # Create an empty torch.tensor to store the SDMs 
     sdm_values = torch.zeros(num_gridpoints).to(device)
@@ -468,10 +534,14 @@ def compute_sdm(data: xr.Dataset, mask: xr.Dataset,
     predictor_lons = data['lon'].values
 
     hv_dists = np.zeros((num_gridpoints,
-                        spatial_dim_1, spatial_dim_2))
+                         spatial_dim_1, spatial_dim_2))
 
     for gp_idx in range(num_gridpoints):
-        target_lat, target_lon = mask_stack_filt['gridpoint'].values[gp_idx]
+        if ('lat' in mask.dims) and ('lon' in mask.dims): # Grid
+            target_lat, target_lon = mask_stack_filt['gridpoint'].values[gp_idx]
+        elif len(mask.dims) == 1: # Stations
+            target_lat, target_lon = mask['lat'].values[gp_idx], mask['lon'].values[gp_idx]
+
         hv_dists[gp_idx, :] = haversine_distance(predictor_lats=predictor_lats,
                                                  predictor_lons=predictor_lons,
                                                  target_lat=target_lat,
@@ -538,11 +608,14 @@ def compute_sdm(data: xr.Dataset, mask: xr.Dataset,
     # Insert the SDM values into a xarray Dataset. For this, mask
     # is used as template
     sdm_dataset = mask.copy(deep=True)
-    var_name = list(sdm_dataset.data_vars)[0]
-    sdm_dataset[var_name] = sdm_dataset[var_name].astype('float32')
+    sdm_dataset[var_target] = sdm_dataset[var_target].astype('float32')
 
-    one_indices = (sdm_dataset[var_name].values == 1)
-    sdm_dataset[var_name].values[one_indices] = sdm_values
-    sdm_dataset[var_name].values[~one_indices] = np.nan
+    # Fill the final dataset
+    if ('lat' in mask.dims) and ('lon' in mask.dims): # Grid
+        one_indices = (sdm_dataset[var_target].values == 1)
+        sdm_dataset[var_target].values[one_indices] = sdm_values
+        sdm_dataset[var_target].values[~one_indices] = np.nan
+    elif len(mask.dims) == 1: # Stations
+        sdm_dataset[var_target].values = sdm_values
 
     return sdm_dataset
