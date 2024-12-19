@@ -95,6 +95,12 @@ def postprocess_saliency_torch(saliency: torch.tensor,
     to inform statistical downscaling based on deep learning beyond standard validation
     approaches. Journal of Advances in Modeling Earth Systems, 15(11), e2023MS003641.
 
+    Note
+    ----
+    For variables like precipitation, where the target may contain zeros, saliency can
+    return NaNs in such cases (due to division by maximums or sums of these zeros). To
+    prevent this, the function replaces NaNs with zeros.
+
     Parameters
     ----------
     saliency : torch.tensor
@@ -124,6 +130,9 @@ def postprocess_saliency_torch(saliency: torch.tensor,
     saliency_spatial_sum = torch.sum(saliency, dim=(1, 2, 3))
     saliency_spatial_sum = saliency_spatial_sum[:, None, None, None]
     saliency = saliency / saliency_spatial_sum
+
+    # Convert nans to zero
+    saliency = torch.nan_to_num(saliency, nan=0.0)
 
     return saliency
 

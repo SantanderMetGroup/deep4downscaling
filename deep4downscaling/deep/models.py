@@ -133,11 +133,16 @@ class DeepESDpr(torch.nn.Module):
         If set to True, the model is composed of three final dense layers computing
         the p, shape and scale of the Bernoulli-gamma distribution. Otherwise,
         the models is composed of one final layer computing the values.
+
+    last_relu: bool, optional
+        If set to True, the output of the last dense layer is passed through a
+        ReLU activation function. This does not apply when stochastic=True. By
+        default is set to False.
     """
 
-
     def __init__(self, x_shape: tuple, y_shape: tuple,
-                 filters_last_conv: int, stochastic: bool):
+                 filters_last_conv: int, stochastic: bool,
+                 last_relu: bool=False):
 
         super(DeepESDpr, self).__init__()
 
@@ -152,6 +157,7 @@ class DeepESDpr(torch.nn.Module):
         self.y_shape = y_shape
         self.filters_last_conv = filters_last_conv
         self.stochastic = stochastic
+        self.last_relu = last_relu
 
         self.conv_1 = torch.nn.Conv2d(in_channels=self.x_shape[1],
                                       out_channels=50,
@@ -209,6 +215,7 @@ class DeepESDpr(torch.nn.Module):
             out = torch.cat((p, log_shape, log_scale), dim = 1)
         else:
             out = self.out(x)
+            if self.last_relu: out = torch.relu(out)
 
         return out
 
