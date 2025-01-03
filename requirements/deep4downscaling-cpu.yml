@@ -273,4 +273,5 @@ dependencies:
   - cpuonly
   - captum
   - netcdf4
+  - bottleneck
 prefix: /opt/conda/envs/deep4downscaling-cpu
