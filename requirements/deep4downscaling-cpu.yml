@@ -274,4 +274,5 @@ dependencies:
   - captum
   - netcdf4
   - bottleneck
+  - xskillscore
 prefix: /opt/conda/envs/deep4downscaling-cpu

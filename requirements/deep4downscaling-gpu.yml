@@ -273,4 +273,6 @@ dependencies:
   - pytorch-cuda=12.4
   - netcdf4
   - bottleneck
+  - captum
+  - xskillscore
 prefix: /opt/conda/envs/deep4downscaling-gpu
