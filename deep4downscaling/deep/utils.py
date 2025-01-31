@@ -1,3 +1,9 @@
+"""
+This module contains utility functions for the deep learning models.
+
+Author: Jose González-Abad
+"""
+
 import torch
 from torch.utils.data import Dataset
 import numpy as np

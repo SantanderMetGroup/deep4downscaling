@@ -1,3 +1,10 @@
+"""
+This module contains the functions for computing the saliency maps of the
+deep learning models, as well as some XAI-based metrics.
+
+Author: Jose González-Abad
+"""
+
 import sys
 import xarray as xr
 import captum

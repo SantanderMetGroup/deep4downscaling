@@ -1,3 +1,10 @@
+"""
+This module contains functions for visualizing xarray.Dataset objects.
+It provides tools for creating maps, plots, and visualizations of climate data.
+
+Author: Jose González-Abad
+"""
+
 import xarray as xr
 import numpy as np
 import matplotlib.pyplot as plt

@@ -1,3 +1,11 @@
+"""
+This module contains the definition of the deep learning models for
+statistical downscaling. References to each of the models are provided
+in the docstring of each class.
+
+Author: Jose González-Abad
+"""
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F

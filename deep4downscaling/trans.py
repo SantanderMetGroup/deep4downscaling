@@ -1,3 +1,10 @@
+"""
+This module contains functions for transforming and manipulating xarray.Dataset objects.
+It provides tools for data cleaning, alignment, standardization, and other common data operations.
+
+Author: Jose González-Abad
+""" 
+
 import xarray as xr
 import numpy as np
 

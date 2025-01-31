@@ -1,3 +1,10 @@
+"""
+This module contains loss functions for training deep learning
+downscaling models.
+
+Author: Jose González-Abad
+"""
+
 import os
 import torch
 import torch.nn as nn

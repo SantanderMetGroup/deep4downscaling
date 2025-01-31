@@ -1,3 +1,11 @@
+"""
+This module contains the functions for computing the predictions of the
+deep learning models.
+
+Author: Jose González-Abad
+"""
+
+import sys
 import sys
 import gc
 import types

@@ -1,3 +1,10 @@
+"""
+This module contains the function c4r2d4d, which transforms a .RData object returned
+by climate4R functions into an xarray.Dataset.
+
+Author: Oscar Mirones
+"""
+
 import numpy as np
 import xarray as xr
 import pandas as pd
@@ -7,14 +14,24 @@ from rpy2.robjects.packages import importr
 def c4r2d4d(c4r):
 
     """
-    This function transforms a .RData object returned by climate4R functions into an xarray.Dataset for further manipulation and analysis in       Python. It extracts key components from the input R object, such as the variable(s), data, spatial coordinates, temporal information, and optional metadata, and reorganizes them into an xarray.Dataset. The function maps spatial coordinates to longitude (lon) and latitude (lat) for gridded data or assigns them to a loc dimension for flattened datasets. Temporal information is converted into Python's datetime format for easier time-based indexing. The function dynamically handles multiple dimensions, such as time, lat, lon, loc, and member, depending on the structure of the input data. It ensures that the resulting dataset is compatible with Python's geospatial libraries, allowing users to efficiently work with climate data in Python. Additionally, any metadata from the input R object is preserved and included as global attributes in the output xarray.Dataset.
+    This function transforms a .RData object returned by climate4R functions into an
+    xarray.Dataset for further manipulation and analysis in Python. It extracts key
+    components from the input R object, such as the variable(s), data, spatial coordinates,
+    temporal information, and optional metadata, and reorganizes them into an xarray.Dataset.
+    The function maps spatial coordinates to longitude (lon) and latitude (lat) for gridded
+    data or assigns them to a loc dimension for flattened datasets. Temporal information is
+    converted into Python's datetime format for easier time-based indexing. The function
+    dynamically handles multiple dimensions, such as time, lat, lon, loc, and member,
+    depending on the structure of the input data. It ensures that the resulting dataset is
+    compatible with Python's geospatial libraries, allowing users to efficiently work with climate
+    data in Python. Additionally, any metadata from the input R object is preserved and included as
+    global attributes in the output xarray.Dataset.
 
     Parameters
     ----------
     c4r
         The .RData object returned by climate4R functions containing the climate data and metadata.
         
-
     Returns
     -------
     xarray.Dataset 

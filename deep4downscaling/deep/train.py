@@ -1,3 +1,9 @@
+"""
+This module contains the functions for training deep learning models.
+
+Author: Jose González-Abad
+"""
+
 import os
 import copy
 import numpy as np

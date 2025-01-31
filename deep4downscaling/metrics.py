@@ -1,3 +1,10 @@
+"""
+This module contains functions for evaluating the performance of downscaling models
+by calculating various metrics.
+
+Author: Jose González-Abad
+"""
+
 import xarray as xr
 import numpy as np
 import xskillscore as xss

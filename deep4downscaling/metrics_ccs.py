@@ -1,3 +1,11 @@
+"""
+This module contains the function compute_ccs, which computes the Climate Change
+Signal (CCs) between the future and historical data (future - historical) after
+aggregating each of these set of data with the reduction_function.
+
+Author: Jose González-Abad
+"""
+
 import xarray as xr
 from typing import Callable
 
