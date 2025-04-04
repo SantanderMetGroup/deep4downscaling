@@ -537,6 +537,7 @@ class Asym(nn.Module):
                 cdf_i = torch.clone(cdfs)
                 cdf_i[cdf_i < p_min] = 0
                 cdf_i[cdf_i > p_max] = 0
+                cdf_i[cdf_i > 0] = 1
                 loss_i = torch.mean(
                     torch.abs(target - output) + (cdf_i * w_i) * torch.max(torch.tensor(0.0), target - output))
                 loss.append(loss_i)
