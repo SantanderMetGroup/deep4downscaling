@@ -203,6 +203,7 @@ def multiple_map_plot(data: xr.Dataset, output_path: str,
     num_variables = len(data.keys())
 
     if num_variables == 1:
+        print('Warning: For single variable datasets, consider using simple_map_plot instead')
         num_rows, num_cols = 1,1
     elif num_variables == 3:
         num_rows, num_cols = 2,2

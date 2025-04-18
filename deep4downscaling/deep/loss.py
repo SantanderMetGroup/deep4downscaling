@@ -2,7 +2,9 @@
 This module contains loss functions for training deep learning
 downscaling models.
 
-Author: Jose González-Abad
+Authors:
+    Jose González-Abad
+    Alfonso Hernanz
 """
 
 import os
