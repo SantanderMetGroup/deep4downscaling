@@ -157,12 +157,28 @@ def standard_training_loop(model: torch.nn.Module, model_name: str, model_path: 
         epoch_end = time.time()
         epoch_time = np.round(epoch_end - epoch_start, 2)
 
+        # Build log message
         log_msg = f'Epoch {epoch+1} ({epoch_time} secs) | Training Loss {np.round(epoch_train_loss[-1], 4)}'
-        if valid_data is not None: log_msg = log_msg + f' Valid Loss {np.round(epoch_valid_loss[-1], 4)}'
+        if valid_data is not None: 
+            log_msg = log_msg + f' Valid Loss {np.round(epoch_valid_loss[-1], 4)}'
+        
+        # Step the scheduler if provided
+        if scheduler is not None:
+            # If scheduler is ReduceLROnPlateau, it needs the validation loss
+            if isinstance(scheduler, torch.optim.lr_scheduler.ReduceLROnPlateau):
+                if valid_data is not None:
+                    scheduler.step(epoch_valid_loss[-1])
+                else:
+                    scheduler.step(epoch_train_loss[-1])
+            else:
+                scheduler.step()
+            
+            # Add current learning rate to log message
+            current_lr = scheduler.get_last_lr()[0] if not isinstance(scheduler, torch.optim.lr_scheduler.ReduceLROnPlateau) else optimizer.param_groups[0]['lr']
+            log_msg = log_msg + f' | LR {current_lr:.2e}'
 
-        # If early stopping perform the step
+        # Early stopping logic
         if patience_early_stopping is not None:
-
             # Save the model if the validation loss improves
             if epoch_valid_loss[-1] < best_val_loss:
                 best_val_loss = epoch_valid_loss[-1]
