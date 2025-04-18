@@ -208,8 +208,8 @@ def multiple_map_plot(data: xr.Dataset, output_path: str,
     elif num_variables == 3:
         num_rows, num_cols = 2,2
     else:
-	num_cols = 2
-	num_rows = math.ceil(num_variables/num_cols)
+        num_cols = 2
+        num_rows = math.ceil(num_variables/num_cols)
 
     fig = plt.figure(figsize=(20, 20))
 
