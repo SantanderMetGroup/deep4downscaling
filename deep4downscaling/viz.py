@@ -202,15 +202,17 @@ def multiple_map_plot(data: xr.Dataset, output_path: str,
 
     num_variables = len(data.keys())
 
-    if num_variables % 2 == 1:
-        num_rows, num_cols = math.ceil(num_variables/2), math.floor(num_variables/2)
+    if num_variables == 1:
+        num_rows, num_cols = 1,1
+    elif num_variables == 3:
+        num_rows, num_cols = 2,2
     else:
-        num_rows, num_cols = num_variables // 2, 2
+	num_cols = 2
+	num_rows = math.ceil(num_variables/num_cols)
 
     fig = plt.figure(figsize=(20, 20))
 
-    plot_counter = 1
-    for idx, var_to_plot in enumerate(data.keys()):
+    for plot_counter, var_to_plot in enumerate(data.keys(), start=1):
         
         ax = fig.add_subplot(num_rows, num_cols, plot_counter,
                              projection=ccrs.PlateCarree())
@@ -235,8 +237,6 @@ def multiple_map_plot(data: xr.Dataset, output_path: str,
         ax_cb = divider.new_horizontal(size='5%', pad=0.1, axes_class=plt.Axes)
         fig.add_axes(ax_cb)
         plt.colorbar(cs, cax=ax_cb, orientation='vertical')
-
-        plot_counter = plot_counter+1
     
     plt.savefig(output_path, bbox_inches='tight')
     plt.close()

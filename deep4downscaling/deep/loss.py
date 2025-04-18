@@ -189,7 +189,7 @@ class NLLBerGammaLoss(nn.Module):
 class Asym(nn.Module):
 
     """
-    Asymmetric loss function tailored for daily precipitation as developed in
+    Generalization of the asymmetric loss function tailored for daily precipitation developed in
     Doury et al. 2024. It is possible to compute this metric over a target dataset
     with nans.
 
@@ -203,11 +203,22 @@ class Asym(nn.Module):
     spatial domain. This class provides all the methods require to fit these 
     distributions to the data.
 
+    The level of asymmetry can be adjusted by the pairs asym_weight and cdf_pow.
+
     Parameters
     ----------
     ignore_nans : bool
         Whether to allow the loss function to ignore nans in the
         target domain.
+
+    asym_weight : float, optional
+        Weight for the asymmetric term at the loss function relative to the MAE term.
+        Default value: 1 (as in Doury et al., 2024)
+
+    cdf_pow : float, optional
+        Pow for the CDF at the asymmetric term of the loss function.
+        Default value: 2 (as in Doury et al., 2024)
+        Higher values make a bigger differentiation between the weight for high/low percentiles
 
     asym_path : str
         Path to the folder to save the fitted distributions.
@@ -227,10 +238,26 @@ class Asym(nn.Module):
     """
 
     def __init__(self, ignore_nans: bool, asym_path: str,
-                 appendix: str=None) -> None:
+                 asym_weight: float = 1.0, cdf_pow: float = 2.0,
+                 appendix: str = None) -> None:
         super(Asym, self).__init__()
+
+        # Ensure that asym_weight and cdf_pow are numeric values
+        if not isinstance(asym_weight, (int, float)):
+            raise ValueError("'asym_weight' must be a numeric value.")
+        if not isinstance(cdf_pow, (int, float)):
+            raise ValueError("'cdf_pow' must be a numeric value.")
+            
+        # Convert to float if needed and check positiveness
+        asym_weight = float(asym_weight)
+        cdf_pow = float(cdf_pow)
+        if asym_weight < 0 or cdf_pow < 0:
+            raise ValueError("'asym_weight' and 'cdf_pow' must be positive.")
+
         self.ignore_nans = ignore_nans
         self.asym_path = asym_path
+        self.asym_weight = asym_weight
+        self.cdf_pow = cdf_pow
         self.appendix = appendix
 
     def parameters_exist(self):
@@ -459,6 +486,9 @@ class Asym(nn.Module):
             target = target[~nans_idx]
             cdfs = cdfs[~nans_idx]
 
-        loss = torch.mean(torch.abs(target - output) + \
-                          (cdfs ** 2) * torch.max(torch.tensor(0.0), target - output))
+        # Compute the loss
+        loss_mae = torch.mean(torch.abs(target - output))
+        loss_asym = torch.mean((cdfs ** self.cdf_pow) * torch.max(torch.tensor(0.0), target - output))
+        loss = loss_mae + self.asym_weight * loss_asym
+
         return loss
