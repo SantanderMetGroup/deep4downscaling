@@ -26,6 +26,34 @@ In addition to these main goals, `deep4downscaling` includes:
 **Comprehensive Evaluation Metrics**:
 A dedicated collection of evaluation metrics widely recognized in the downscaling community, enabling researchers to thoroughly assess model performance.
 
+| Metric | Description |
+| --- | --- |
+| `bias_mean` | Bias of the mean between the target and predicted datasets. |
+| `bias_tnn` | Bias of the annual minimum of daily minimum temperature (TNn). |
+| `bias_txx` | Bias of the annual maximum of daily maximum temperature (TXx). |
+| `bias_quantile` | Bias of a specified quantile. |
+| `mae` | Mean Absolute Error (MAE). |
+| `rmse` | Root Mean Square Error (RMSE). |
+| `rmse_wet` | RMSE for wet days only. |
+| `rmse_relative` | RMSE relative to the target's standard deviation. |
+| `bias_rel_mean` | Relative bias of the mean. |
+| `bias_rel_quantile` | Relative bias of a specified quantile. |
+| `bias_rel_R01` | Relative bias of the wet-day frequency index (R01). |
+| `bias_rel_dry_days` | Relative bias of the proportion of dry days. |
+| `bias_rel_SDII` | Relative bias of the wet-day intensity index (SDII). |
+| `bias_rel_rx1day` | Relative bias of the maximum 1-day precipitation index (Rx1day). |
+| `ratio_std` | Ratio of standard deviations. |
+| `ratio_interannual_var` | Ratio of interannual variability. |
+| `corr` | Pearson or Spearman correlation, with an option for deseasonalized data. |
+| `joint_quantile_exceedance` | Joint exceedance probability for a given quantile for two variables. |
+| `bias_joint_quantile_exceedance` | Bias in the joint quantile exceedance probability. |
+| `diurnal_temp_range` | Diurnal temperature range (DTR). |
+| `bias_diurnal_temp_range` | Bias in the diurnal temperature range. |
+| `corr_compound` | Pearson or Spearman correlation between two different variables. |
+| `bias_corr_compound` | Bias in the correlation between two different variables. |
+| `crps_ensemble` | Continuous Ranked Probability Score (CRPS) for an ensemble forecast. |
+| `normalized_rank` | Normalized Rank for an ensemble forecast. |
+
 **eXplainable Artificial Intelligence (XAI) Techniques Tailored for Downscaling**:
 XAI techniques adapted for statistical downscaling models. This ensures that generated projections are transparent and trustworthy—a critical feature for decision-makers and other end-users who rely on climate modeling outputs.
 
