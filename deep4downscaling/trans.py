@@ -415,3 +415,36 @@ def replicate_across_time(data: xr.Dataset, ref: xr.Dataset) -> xr.Dataset:
     data_rep = data_rep.to_dataset(name=var_name)
 
     return data_rep
+
+def sort_variables(data: xr.Dataset, ref: xr.Dataset, keep_vars: bool = False) -> xr.Dataset:
+    """
+    Sort the variables of a dataset to make projection upon based on reference (predictor used to train) variables order.
+
+    Parameters
+    ----------
+    data : xr.Dataset
+        Objective dataset to sort variables.
+
+    ref : xr.Dataset
+        Dataset used as reference for variables order.
+
+    keep_vars: bool, optional (default=False)
+        If True, keeps variables in `data` that are not in `ref`, appended at the end.
+        If False, only keeps variables that are also in `ref`.
+    Returns
+    -------
+    data_sorted: xr.Dataset
+        Dataset with variables sorted according to reference variables
+    """
+    
+    if set(data.data_vars).issubset(set(ref.data_vars)):
+        ref_var_order = list(ref.data_vars)
+        if keep_vars:
+            data_sorted = data[[var for var in ref_var_order if var in data.data_vars] +  
+                            [var for var in data.data_vars if var not in ref_var_order]]
+        else:
+            data_sorted = data[[var for var in ref_var_order if var in data.data_vars]]
+    else:
+        raise ValueError("Variables in data are not present in the reference data.")
+    
+    return data_sorted
