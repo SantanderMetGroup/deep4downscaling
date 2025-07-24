@@ -41,6 +41,10 @@ class MaeLoss(nn.Module):
 
     def forward(self, target: torch.Tensor, output: torch.Tensor) -> torch.Tensor:
 
+        if target.ndim > 2:
+            target = target.reshape(target.shape[0], -1)
+            output = output.reshape(output.shape[0], -1)
+
         if self.ignore_nans:
             nans_idx = torch.isnan(target)
             output = output[~nans_idx]
@@ -73,6 +77,10 @@ class MseLoss(nn.Module):
         self.ignore_nans = ignore_nans
 
     def forward(self, target: torch.Tensor, output: torch.Tensor) -> torch.Tensor:
+
+        if target.ndim > 2:
+            target = target.reshape(target.shape[0], -1)
+            output = output.reshape(output.shape[0], -1)
 
         if self.ignore_nans:
             nans_idx = torch.isnan(target)
@@ -167,6 +175,7 @@ class NLLBerGammaLoss(nn.Module):
         p = output[:, :dim_target]
         shape = torch.exp(output[:, dim_target:(dim_target*2)])
         scale = torch.exp(output[:, (dim_target*2):])
+
 
         if self.ignore_nans:
             nans_idx = torch.isnan(target)

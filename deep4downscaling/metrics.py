@@ -704,7 +704,7 @@ def corr(target: xr.Dataset, pred: xr.Dataset,
         raise ValueError('It is not possible to compute the deseasonal correlation for a seasonal subset')
 
     if corr_type == 'spearman':
-        corr_function = xskillscore.spearman_r
+        corr_function = xss.spearman_r
     elif corr_type == 'pearson':
         corr_function = xr.corr
     else:
@@ -945,7 +945,7 @@ def corr_compound(data_1: xr.Dataset, data_2: xr.Dataset,
     data_2 = _filter_by_season(data_2, season)
 
     if corr_type == 'spearman':
-        corr_function = xskillscore.spearman_r
+        corr_function = xss.spearman_r
     elif corr_type == 'pearson':
         corr_function = xr.corr
     else:

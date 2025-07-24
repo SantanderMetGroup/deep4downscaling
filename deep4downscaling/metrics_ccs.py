@@ -40,7 +40,7 @@ def R01(data: xr.Dataset, threshold: int=1) -> xr.Dataset:
     return ((data >= threshold) * 1).mean('time')
 
 def SDII(data:xr.Dataset, threshold: int=1) -> xr.Dataset:
-    return data.where(x['pr'] >= 1).mean('time')
+    return data.where(data['pr'] >= 1).mean('time')
 
 def RX1day(data: xr.Dataset) -> xr.Dataset:
     return data.groupby('time.year').max('time').mean('year')

@@ -1,0 +1,10 @@
+Metadata-Version: 1.2
+Name: deep4downscaling
+Version: 0.1.0
+Summary: Deep learning framework for downscaling
+Home-page: UNKNOWN
+License: UNKNOWN
+Description: UNKNOWN
+Platform: UNKNOWN
+Requires-Python: >=3.8
+License-File: LICENSE

@@ -12,6 +12,154 @@ import torch.nn.functional as F
 import torch.nn.init as init
 import numpy as np
 
+class DeepESD(torch.nn.Module):
+
+    """
+    DeepESD model as proposed in Baño-Medina et al. 2024. 
+
+    Baño-Medina, J., Manzanas, R., Cimadevilla, E., Fernández, J., González-Abad,
+    J., Cofiño, A. S., and Gutiérrez, J. M.: Downscaling multi-model climate projection
+    ensembles with deep learning (DeepESD): contribution to CORDEX EUR-44, Geosci. Model
+    Dev., 15, 6747–6758, https://doi.org/10.5194/gmd-15-6747-2022, 2022.
+
+    Parameters
+    ----------
+    x_shape : tuple
+        Shape of the data used as predictor. This must have dimension 4
+        (time, channels/variables, lon, lat).
+
+    y_shape : tuple
+        Shape of the data used as predictand. This must have dimension 2
+        (time, channels, gridpoint)
+
+    filters_last_conv : int
+        Number of filters/kernels of the last convolutional layer
+
+    """
+
+
+    def __init__(self, x_shape: tuple, y_shape: tuple,
+                 filters_last_conv: int, 
+                 loss_function_name: str=None,
+                 last_relu: bool=False):
+
+        super(DeepESD, self).__init__()
+
+        ## Predictor checks
+        if (len(x_shape) != 4):
+            error_msg =\
+            'X must have a dimension of length 4'
+
+            raise ValueError(error_msg)
+
+        self.x_shape = x_shape
+
+        ## Predictand checks
+        if (len(y_shape) < 2):
+            error_msg =\
+            'X must have a dimension of length >=2'
+
+            raise ValueError(error_msg)
+
+        self.y_shape = y_shape
+        if len(self.y_shape) == 2: # Univariate
+            self.num_samples, self.num_gridpoints = self.y_shape
+            self.num_output_vars = 1
+        elif len(self.y_shape) == 3: # Multivariate
+            self.num_samples, self.num_output_vars, self.num_gridpoints = self.y_shape
+
+        ## Model parameters
+        self.filters_last_conv = filters_last_conv
+        self.loss_function_name = loss_function_name
+        self.last_relu = last_relu
+
+        # if len(y_shape) > 2 and self.loss_function_name in ["NLLGaussianLoss", "NLLBerGammaLoss"]:
+        #     error_msg =\
+        #     f'Y must have a dimension of length 2 to be compatible with {self.loss_function_name}, e.g., it is not a multivariate case.'
+        # 
+        #     raise ValueError(error_msg)
+
+        ## Layers
+        self.conv_1 = torch.nn.Conv2d(in_channels=self.x_shape[1],
+                                      out_channels=50,
+                                      kernel_size=3,
+                                      padding=1)
+
+        self.conv_2 = torch.nn.Conv2d(in_channels=50,
+                                      out_channels=25,
+                                      kernel_size=3,
+                                      padding=1)
+
+        self.conv_3 = torch.nn.Conv2d(in_channels=25,
+                                      out_channels=self.filters_last_conv,
+                                      kernel_size=3,
+                                      padding=1)
+
+        if self.loss_function_name == "NLLGaussianLoss":
+            self.out_mean = torch.nn.Linear(in_features=\
+                                            self.x_shape[2] * self.x_shape[3] * self.filters_last_conv,
+                                            out_features=self.num_gridpoints)
+
+            self.out_log_var = torch.nn.Linear(in_features=\
+                                            self.x_shape[2] * self.x_shape[3] * self.filters_last_conv,
+                                            out_features=self.num_gridpoints)
+
+        elif self.loss_function_name == "NLLBerGammaLoss": 
+            self.p = torch.nn.Linear(in_features=\
+                                     self.x_shape[2] * self.x_shape[3] * self.filters_last_conv,
+                                     out_features=self.num_gridpoints)
+
+            self.log_shape = torch.nn.Linear(in_features=\
+                                             self.x_shape[2] * self.x_shape[3] * self.filters_last_conv,
+                                             out_features=self.num_gridpoints)
+
+            self.log_scale = torch.nn.Linear(in_features=\
+                                             self.x_shape[2] * self.x_shape[3] * self.filters_last_conv,
+                                             out_features=self.num_gridpoints)
+
+        else:
+            self.out = torch.nn.Linear(in_features=\
+                                       self.x_shape[2] * self.x_shape[3] * self.filters_last_conv,
+                                       out_features=self.num_output_vars * self.num_gridpoints)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+
+        x = self.conv_1(x)
+        x = torch.relu(x)
+
+        x = self.conv_2(x)
+        x = torch.relu(x)
+
+        x = self.conv_3(x)
+        x = torch.relu(x)
+
+        x = torch.flatten(x, start_dim=1)
+
+        if self.loss_function_name == "NLLGaussianLoss":
+            mean = self.out_mean(x)
+            log_var = self.out_log_var(x)
+            out = torch.cat((mean, log_var), dim=1)
+
+        elif self.loss_function_name == "NLLBerGammaLoss":
+            p = self.p(x)
+            p = torch.sigmoid(p)
+            log_shape = self.log_shape(x)
+            log_scale = self.log_scale(x)
+            out = torch.cat((p, log_shape, log_scale), dim = 1)
+        else:
+            x = self.out(x) # (batch_size, num_output_vars * num_gridpoints)
+
+            ## Reshape to (num_output_vars, num_gridpoints) ?
+            if len(self.y_shape) == 3:
+                out = x.view(x.size(0), self.num_output_vars, -1) # (batch_size, num_output_vars, num_gridpoints) 
+            else:
+                out = x
+            ## Final Relu?
+            if self.last_relu: out = torch.relu(out)
+
+        return out
+
+
 class DeepESDtas(torch.nn.Module):
 
     """

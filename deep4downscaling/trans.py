@@ -7,6 +7,35 @@ Author: Jose González-Abad
 
 import xarray as xr
 import numpy as np
+from typing import Union, List, Tuple
+
+
+def from_xr_grid_to_vector(y):
+ 
+     ## Compute mask to identify NaNs in the output field
+     y_mask = compute_valid_mask(y) 
+
+     ## Predictand: Convert 2D grid to 1D vector
+     if "x" in y.dims and "y" in y.dims:
+          if y.sizes["x"] > 1 and y.sizes["y"] > 1:
+               y_mask_stack = y_mask.stack(gridpoint=("y", "x"))
+               y_stack = y.stack(gridpoint=("y", "x"))
+          else:
+               raise ValueError("x or y dimension has size <= 1; cannot stack.")
+
+     elif "lat" in y.dims and "lon" in y.dims:
+        y_mask_stack = y_mask.stack(gridpoint=("lat", "lon"))
+        y_stack = y.stack(gridpoint=("lat", "lon"))
+
+     else:
+          raise ValueError("Cannot determine which dimensions to stack.")
+
+     ## Drop NaNs
+     y_stack_filt = y_stack.where(y_stack['gridpoint'] == y_mask_stack['gridpoint'], drop=True) 
+
+     ## Return
+     return y_stack_filt
+
 
 def remove_days_with_nans(data: xr.Dataset,
                           coord_names: dict={'lat': 'lat',
@@ -75,7 +104,14 @@ def align_datasets(data_1: xr.Dataset, data_2: xr.Dataset, coord: str) -> (xr.Da
 
     return data_1, data_2
 
-def standardize(data_ref: xr.Dataset, data: xr.Dataset) -> xr.Dataset:
+def standardize(
+    data: xr.Dataset,
+    data_ref: xr.Dataset = None,
+    path_mean: str = None,
+    path_std: str = None,
+    dims: Union[str, List[str]] = "time",
+    return_params: bool = False
+) -> Union[xr.Dataset, Tuple[xr.Dataset, xr.Dataset, xr.Dataset]]:
 
     """
     Standardize the data with the mean and std computed over the data_ref.
@@ -88,19 +124,32 @@ def standardize(data_ref: xr.Dataset, data: xr.Dataset) -> xr.Dataset:
 
     data : xr.DataSet
         Data to standardize
+    
+    dims : str or list of str, default "time"
+        Dimensions over which to compute the mean and standard deviation.
+
+    return_params : bool, default False
+        If True, return the mean and std used in the standardization.
 
     Returns
     -------
-    xr.Dataset        
-        Standardize data
+    xr.Dataset or tuple
+        Standardized data, and optionally the mean and std.
     """
 
-    mean = data_ref.mean('time')
-    std = data_ref.std('time')
+    if data_ref is not None:
+        mean = data_ref.mean(dim=dims)
+        std = data_ref.std(dim=dims)
+    else:
+        mean = xr.open_dataset(path_mean)
+        std = xr.open_dataset(path_std)
 
     data_stand = (data - mean) / std
 
-    return data_stand
+    if return_params:
+        return data_stand, mean, std
+    else:
+        return data_stand
 
 def undo_standardization(data_ref: xr.Dataset, data: xr.Dataset) -> xr.Dataset:
 

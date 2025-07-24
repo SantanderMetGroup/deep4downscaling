@@ -130,35 +130,46 @@ def _pred_to_xarray(data_pred: np.ndarray, time_pred: np.ndarray,
         The data_pred argument properly transformed to xr.Dataset.
     """
 
+    if not isinstance(var_target, list): # for compatibility with both univariate and multivariate cases and previous versions of d4d
+        var_target = [var_target]
+
     # Expand the mask in the time dimension of the final prediction
     mask = mask.expand_dims(time=time_pred)
     mask = mask.ffill(dim='time')
 
     # By default xarray casts the mask to int64 but we need a 
     # float-based type
-    mask[var_target] = mask[var_target].astype('float32')
+    for var in var_target:
+        if mask[var].dtype == 'float64':
+            mask[var] = mask[var].astype('float32')
     
     # Stack following the procedure perform in all these modules
-    # mask = mask.stack(gridpoint=spatial_dims)
     mask = mask.stack(gridpoint=spatial_dims)
 
-    # Assign the perdiction to the gridpoints of the mask with value 1
-    # For the 0 ones we assign them np.nan
-    one_indices = (mask[var_target].values == 1)
-    
-    # For fully-convolutional models, for which the prediction includes
-    # nan and non-nans values of the y_mask
-    if mask['gridpoint'].shape[0] == data_pred.shape[1]:
-        mask[var_target].values = data_pred
-    # For DeepESD-like models, for which the predictons only corresponds
-    # to the non-nan values
-    else:
-        mask[var_target].values[one_indices] = data_pred.flatten()
-    
-    mask[var_target].values[~one_indices] = np.nan
+    for v, var in enumerate(var_target):
+        if data_pred.ndim > 2: # multivariate
+            data_pred_v = data_pred[:,v,:]
+        else: # univariate
+            data_pred_v = data_pred
+
+        # Assign the perdiction to the gridpoints of the mask with value 1
+        # For the 0 ones we assign them np.nan
+        one_indices = (mask[var].values == 1)
+        
+        # For fully-convolutional models, for which the prediction includes
+        # nan and non-nans values of the y_mask
+        if mask['gridpoint'].shape[0] == data_pred_v.shape[1]:
+            mask[var].values = data_pred_v
+        # For DeepESD-like models, for which the predictons only corresponds
+        # to the non-nan values
+        else:
+            mask[var].values[one_indices] = data_pred_v.flatten()
+        
+        mask[var].values[~one_indices] = np.nan
 
     # Unstack and return
     mask = mask.unstack()
+
     return mask
 
 def _pred_stations_to_xarray(data_pred: np.ndarray, time_pred: np.ndarray,
@@ -412,6 +423,7 @@ def compute_preds_ber_gamma(x_data: xr.Dataset, model: torch.nn.Module, threshol
                             device: str, var_target: str, mask: xr.Dataset,
                             ensemble_size: int=None,
                             batch_size: int=None,
+                            sample: bool=True,
                             spatial_dims: tuple[str, str]=('lat', 'lon')) -> xr.Dataset:
 
     """
@@ -458,6 +470,9 @@ def compute_preds_ber_gamma(x_data: xr.Dataset, model: torch.nn.Module, threshol
     batch_size : int, optional
         If provided the predictions are computed in batches of size
         batch_size. This is useful when facing OOM errors.
+    
+    sample: bool, optional
+        Should we sample from the Bernoulli-Gamma or provide the expectance?
 
     spatial_dims : tuple[str, str], optional
         Names of the spatial dimensions, defaults to ('lat', 'lon').
@@ -506,7 +521,10 @@ def compute_preds_ber_gamma(x_data: xr.Dataset, model: torch.nn.Module, threshol
         del p_random; gc.collect()
 
         # Compute the amount
-        amount = np.random.gamma(shape=shape, scale=scale)
+        if sample is True:
+            amount = np.random.gamma(shape=shape, scale=scale)
+        else: 
+            amount = shape * scale
 
         # Correct the amount
         epsilon = 1e-06
