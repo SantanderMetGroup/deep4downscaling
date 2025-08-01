@@ -417,23 +417,27 @@ def replicate_across_time(data: xr.Dataset, ref: xr.Dataset) -> xr.Dataset:
     return data_rep
 
 def sort_variables(data: xr.Dataset, ref: xr.Dataset, keep_vars: bool = False) -> xr.Dataset:
+    
     """
-    Sort the variables of a dataset to make projection upon based on reference (predictor used to train) variables order.
+    Sort the variables in one dataset based on their correspondence to
+    variables in another. This step is crucial when using multiple datasets
+    as predictors in a model.
 
     Parameters
     ----------
     data : xr.Dataset
-        Objective dataset to sort variables.
+        Dataset to sort.
 
     ref : xr.Dataset
         Dataset used as reference for variables order.
 
     keep_vars: bool, optional (default=False)
-        If True, keeps variables in `data` that are not in `ref`, appended at the end.
-        If False, only keeps variables that are also in `ref`.
+        If True, keeps variables in `data` that are not in ref, appended at the end.
+        If False, only keeps variables that are in ref.
+        
     Returns
     -------
-    data_sorted: xr.Dataset
+    xr.Dataset
         Dataset with variables sorted according to reference variables
     """
     
