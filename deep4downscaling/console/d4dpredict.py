@@ -148,12 +148,13 @@ def d4dpredict(
     pred = []
     total_batches = (num_test_samples + batch_size - 1) // batch_size
 
-    for batch_num, sample_idx in enumerate(range(num_samples-num_test_samples, num_samples, batch_size), 1):
+    for batch_num, sample_idx in enumerate(range(test_sample_indices[0], test_sample_indices[-1] +1, batch_size), 1):
         print(f'Processing batch {batch_num}/{total_batches}')
-        dates_batch = ds.attrs.get("dates")[sample_idx:(sample_idx+batch_size)]
+        limit = min(sample_idx + batch_size, test_sample_indices[-1] + 1)
+        dates_batch = ds.attrs.get("dates")[sample_idx:(limit)]
             
         # Input data
-        x = ds[sample_idx:(sample_idx+batch_size)].astype(np.float32)   
+        x = ds[sample_idx:(limit)].astype(np.float32)   
         x = (x - m) / s
         x = x.astype(np.float32)
 
