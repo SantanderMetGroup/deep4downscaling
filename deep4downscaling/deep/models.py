@@ -13,7 +13,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 import torch.nn.init as init
 import numpy as np
-
+from math import ceil
 
 class DeepESD_Discriminator(torch.nn.Module):
     """
@@ -240,11 +240,15 @@ class DeepESDpr(torch.nn.Module):
         If set to True, the output of the last dense layer is passed through a
         ReLU activation function. This does not apply when stochastic=True. By
         default is set to False.
+
+    num_channels_noise: int, opional
+        If greater than 0, the model will include the specified number of additional channels as input,
+        effectively making the model generative by injecting noise into the input.  
     """
 
     def __init__(self, x_shape: tuple, y_shape: tuple,
                  filters_last_conv: int, stochastic: bool,
-                 last_relu: bool=False):
+                 last_relu: bool=False, num_channels_noise: int = 0):
 
         super(DeepESDpr, self).__init__()
 
@@ -260,18 +264,29 @@ class DeepESDpr(torch.nn.Module):
         self.filters_last_conv = filters_last_conv
         self.stochastic = stochastic
         self.last_relu = last_relu
+        self.num_channels_noise = num_channels_noise
 
-        self.conv_1 = torch.nn.Conv2d(in_channels=self.x_shape[1],
+        self.conv_1 = torch.nn.Conv2d(in_channels=self.x_shape[1] + num_channels_noise,
                                       out_channels=50,
                                       kernel_size=3,
                                       padding=1)
+        
+        if self.num_channels_noise > 0:
+            in_channels = 50 + num_channels_noise - ceil(0.3 * self.num_channels_noise)
+        else:
+            in_channels = 50 
 
-        self.conv_2 = torch.nn.Conv2d(in_channels=50,
+        self.conv_2 = torch.nn.Conv2d(in_channels=in_channels,
                                       out_channels=25,
                                       kernel_size=3,
                                       padding=1)
+        
+        if self.num_channels_noise > 0:
+            in_channels = 25 + num_channels_noise - ceil(0.6 * self.num_channels_noise)
+        else:
+            in_channels = 25 
 
-        self.conv_3 = torch.nn.Conv2d(in_channels=25,
+        self.conv_3 = torch.nn.Conv2d(in_channels=in_channels,
                                       out_channels=self.filters_last_conv,
                                       kernel_size=3,
                                       padding=1)
@@ -296,11 +311,26 @@ class DeepESDpr(torch.nn.Module):
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
 
+        if self.num_channels_noise > 0:
+            x_noise = torch.randn((x.shape[0],
+                                   self.num_channels_noise, x.shape[2], x.shape[3])).to(x.device)
+            x = torch.cat((x, x_noise), 1)
+
         x = self.conv_1(x)
         x = torch.relu(x)
 
+        if self.num_channels_noise > 0:
+            x_noise = torch.randn((x.shape[0],
+                                    self.num_channels_noise - ceil(0.3 * self.num_channels_noise), x.shape[2], x.shape[3])).to(x.device)
+            x = torch.cat((x, x_noise), 1)
+
         x = self.conv_2(x)
         x = torch.relu(x)
+
+        if self.num_channels_noise > 0:
+            x_noise = torch.randn((x.shape[0],
+                                    self.num_channels_noise - ceil(0.6 * self.num_channels_noise), x.shape[2], x.shape[3])).to(x.device)
+            x = torch.cat((x, x_noise), 1)
 
         x = self.conv_3(x)
         x = torch.relu(x)

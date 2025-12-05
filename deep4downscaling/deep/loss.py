@@ -496,3 +496,38 @@ class Asym(nn.Module):
         return loss
     
 # CRPS Loss Function
+class CRPSLoss(nn.Module):
+
+    """
+    Continuous Ranked Probabiliy Score (CRPS). It is possible to compute
+    this metric over a target dataset with nans.
+
+    Parameters
+    ----------
+    ignore_nans : bool
+        Whether to allow the loss function to ignore nans in the
+        target domain.
+
+    target : torch.Tensor
+        Target/ground-truth data
+
+    output : torch.Tensor
+        Predicted data (model's output)
+    """
+
+    def __init__(self, ignore_nans: bool) -> None:
+        super(CRPSLoss, self).__init__()
+        self.ignore_nans = ignore_nans
+
+    def forward(self, target: torch.Tensor, output: torch.Tensor, output2: torch.Tensor, beta: int) -> torch.Tensor: ######NUEVO
+
+        if self.ignore_nans:
+            nans_idx = torch.isnan(target)
+            output = output[~nans_idx]
+            output2 = output2[~nans_idx]
+            target = target[~nans_idx]
+        s1 = torch.mean(torch.abs(target - output) ** beta)
+        s2 = torch.mean(torch.abs(target - output2) ** beta)
+        loss = ((s1+s2)/2) - 1/2 * torch.mean(torch.abs(output - output2) ** beta)  
+
+        return loss
