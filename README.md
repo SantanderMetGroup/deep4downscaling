@@ -102,15 +102,83 @@ Should you have any questions or need clarifications, feel free to open an issue
 
 ## Contributing
 
-We welcome contributions of all kinds to `deep4downscaling`—from reporting bugs and suggesting improvements to submitting pull requests for new features or fixes. Here’s how you can get involved:
+We use two main branches:
 
-1. **Report Bugs:**  
-   If you find an issue, please [open a new GitHub issue](https://github.com/SantanderMetGroup/deep4downscaling/issues) with details on how to reproduce it.
+- `main`: stable, release-ready code (default branch when cloning).
+- `devel`: active development / integration branch.
 
-2. **Suggest Enhancements or New Features:**  
-   We value user feedback! Feel free to create an issue describing your idea or improvement.
+All pull requests must target `devel`. Direct pushes to `main` and `devel` are restricted to the maintainers. Maintainers periodically merge `devel` into `main` and create new tagged releases from `main`.
 
-3. **Submit Pull Requests:**  
-   - Fork the repository and create a new branch for your changes.  
-   - Make your changes or add your new feature.  
-   - Open a pull request (PR) to the main branch of `deep4downscaling`.   
+---
+
+### For collaborators (with write access)
+
+1. Clone the repository:
+
+   ```bash
+   git clone https://github.com/SantanderMetGroup/deep4downscaling.git
+   cd deep4downscaling
+   ```
+
+2. Create a `feature`/`fix` branch from `devel`:
+
+   ```bash
+   git checkout devel
+   git pull origin devel
+   git checkout -b feature/my-change
+   ```
+
+3. Work and keep in sync with `devel` (optional but recommended):
+
+   ```bash
+   git checkout devel
+   git pull origin devel
+   git checkout feature/my-change
+   git merge devel
+   ```
+
+4. Push and open a pull request into `devel`:
+
+   ```bash
+   git push -u origin feature/my-change
+   ```
+
+On GitHub, open a PR with base branch `devel` (not `main`).
+
+### For external contributors (no write access)
+
+1. Fork this repository on GitHub to your own account.
+2. Clone your fork:
+
+   ```bash
+   git clone https://github.com/<your-username>/deep4downscaling.git
+   cd deep4downscaling
+   ```
+
+3. Add the original repo as upstream and fetch:
+
+   ```bash
+   git remote add upstream https://github.com/SantanderMetGroup/deep4downscaling.git
+   git fetch upstream
+   ```
+
+4. Create a `feature`/`fix` branch from `upstream/devel`:
+
+   ```bash
+   git checkout -b feature/my-change upstream/devel
+   ```
+
+5. Commit your changes and push to your fork:
+
+   ```bash
+   git add ...
+   git commit -m "Describe your change"
+   git push -u origin feature/my-change
+   ```
+
+6. Open a pull request to this repository:
+
+   - base repository: `SantanderMetGroup/deep4downscaling`
+   - base branch: `devel`
+   - head repository: `<your-username>/deep4downscaling`
+   - compare branch: `feature/my-change`
