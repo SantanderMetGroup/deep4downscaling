@@ -495,11 +495,10 @@ class Asym(nn.Module):
 
         return loss
     
-# CRPS Loss Function
 class CRPSLoss(nn.Module):
 
     """
-    Continuous Ranked Probabiliy Score (CRPS). It is possible to compute
+    Continuous Ranked Probability Score (CRPS). It is possible to compute
     this metric over a target dataset with nans.
 
     Parameters
@@ -511,23 +510,49 @@ class CRPSLoss(nn.Module):
     target : torch.Tensor
         Target/ground-truth data
 
-    output : torch.Tensor
-        Predicted data (model's output)
+    output : list of torch.Tensor or torch.Tensor
+        List of predicted data (model's outputs) for ensemble predictions,
+        or a single tensor (which will be wrapped in a list automatically).
+        For proper CRPS computation, at least 2 ensemble members are required.
+
+    beta : int
+        Power parameter for the absolute differences in the CRPS computation.
     """
 
     def __init__(self, ignore_nans: bool) -> None:
         super(CRPSLoss, self).__init__()
         self.ignore_nans = ignore_nans
 
-    def forward(self, target: torch.Tensor, output: torch.Tensor, output2: torch.Tensor, beta: int) -> torch.Tensor: ######NUEVO
+    def forward(self, target: torch.Tensor, output, beta: int = 1) -> torch.Tensor:
 
+        if isinstance(output, torch.Tensor):
+            output = [output]
+        
         if self.ignore_nans:
             nans_idx = torch.isnan(target)
-            output = output[~nans_idx]
-            output2 = output2[~nans_idx]
             target = target[~nans_idx]
-        s1 = torch.mean(torch.abs(target - output) ** beta)
-        s2 = torch.mean(torch.abs(target - output2) ** beta)
-        loss = ((s1+s2)/2) - 1/2 * torch.mean(torch.abs(output - output2) ** beta)  
+            output = [out[~nans_idx] for out in output]
+
+        # Number of ensemble members
+        M = len(output)
+
+        # Error between target and each prediction
+        first_term = 0.0
+        for i in range(M):
+            first_term += torch.abs(target - output[i]) ** beta
+        first_term = first_term / M
+        first_term = torch.mean(first_term)
+
+        # Difference between all pairs of predictions
+        # We divide by M**2 and not by 2*M**2 as we do not repeat the same pairs
+        second_term = 0.0
+        for i in range(M):
+            for j in range(i + 1, M): # We do not repeat the same pairs
+                second_term += torch.abs(output[i] - output[j]) ** beta
+        second_term = second_term / (M ** 2)
+        second_term = torch.mean(second_term)
+
+        # Final loss
+        loss = first_term - second_term
 
         return loss
