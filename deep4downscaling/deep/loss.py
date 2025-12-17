@@ -557,4 +557,90 @@ class CRPSLoss(nn.Module):
         # Final loss
         loss = torch.mean(first_term - second_term)
 
+        return 
+        
+class AtmoRepLoss(nn.Module):
+
+    """
+    AtmoRep loss function for training ensemble-based stochastic atmospheric models.
+    
+    This loss function combines three terms to train models that produce probabilistic
+    predictions through ensemble members. It is designed for the AtmoRep model architecture,
+    which uses large-scale representation learning to model atmospheric dynamics (Lessig et al., 2023).
+    
+    Lessig, C., Luise, I., Gong, B., Langguth, M., Stadtler, S., & Schultz, M. (2023). AtmoRep: A
+    stochastic model of atmosphere dynamics using large scale representation learning.
+    arXiv preprint arXiv:2308.13280.
+
+    Notes
+    -----
+    This loss function is designed to handle ensemble predictions where multiple
+    predictions are generated for a single target value, allowing the model to
+    learn the uncertainty ensemble spread.
+
+    It is important to normalize the target data to have a mean of 0 and a standard deviation of 1
+    to avoid scale discrepancy between the different terms of the loss function.
+
+    Parameters
+    ----------
+    ignore_nans : bool
+        Whether to allow the loss function to ignore nans in the
+        target domain.
+
+    weight_std_regularization : float, optional
+        Weight for the regularization term.
+        Default: 1.0 (as in Lessig et al., 2023)
+
+    eps : float, optional
+        Small epsilon value for numerical stability when clamping variance.
+        Default: 1e-6
+
+    target : torch.Tensor
+        Target/ground-truth data
+
+    output : list of torch.Tensor or torch.Tensor
+        List of predicted data (model's outputs) for ensemble predictions,
+        or a single tensor (which will be wrapped in a list automatically).
+    """
+
+    def __init__(self, ignore_nans: bool, weight_std_regularization: float = 1.0,
+                 eps: float = 1e-6) -> None:
+        super(AtmoRepLoss, self).__init__()
+        self.ignore_nans = ignore_nans
+        self.weight_std_regularization = weight_std_regularization
+        self.eps = eps
+
+    def forward(self, target: torch.Tensor, output: list[torch.Tensor]) -> torch.Tensor:
+
+        if isinstance(output, torch.Tensor):
+            output = [output]
+        
+        if self.ignore_nans:
+            nans_idx = torch.isnan(target)
+            target = target[~nans_idx]
+            output = [out[~nans_idx] for out in output]
+
+        # Number of ensemble members
+        M = len(output)
+
+        # MSE between target and each prediction
+        first_term = 0.0
+        for i in range(M):
+            first_term += torch.abs(target - output[i]) ** 2
+        first_term = first_term / M
+
+        # Gaussian PDF term
+        mu_batch = torch.mean(torch.stack(output), dim=0)
+        var_batch = torch.var(torch.stack(output), unbiased=False, dim=0)
+        var_batch = var_batch.clamp_min(self.eps)
+
+        G = torch.exp(-0.5 * ((target - mu_batch) ** 2) / var_batch) # unnormalized PDF
+        second_term = (1.0 - G) ** 2
+
+        # Std. regularization term
+        third_term = self.weight_std_regularization * torch.sqrt(var_batch)
+
+        # Final loss
+        loss = torch.mean(first_term + second_term + third_term)
+
         return loss
