@@ -541,7 +541,6 @@ class CRPSLoss(nn.Module):
         for i in range(M):
             first_term += torch.abs(target - output[i]) ** beta
         first_term = first_term / M
-        first_term = torch.mean(first_term)
 
         # Difference between all pairs of predictions
         # We divide by M**2 and not by 2*M**2 as we do not repeat the same pairs
@@ -550,9 +549,8 @@ class CRPSLoss(nn.Module):
             for j in range(i + 1, M): # We do not repeat the same pairs
                 second_term += torch.abs(output[i] - output[j]) ** beta
         second_term = second_term / (M ** 2)
-        second_term = torch.mean(second_term)
 
         # Final loss
-        loss = first_term - second_term
+        loss = torch.mean(first_term - second_term)
 
         return loss
