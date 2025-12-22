@@ -494,3 +494,66 @@ class Asym(nn.Module):
         loss = loss_mae + self.asym_weight * loss_asym
 
         return loss
+    
+class CRPSLoss(nn.Module):
+
+    """
+    Fair Continuous Ranked Probability Score (CRPS). It is possible to compute
+    this metric over a target dataset with nans. This is the same as the CRPS,
+    but the second term is divided by 2*M*(M-1) instead of M**2.
+
+    Parameters
+    ----------
+    ignore_nans : bool
+        Whether to allow the loss function to ignore nans in the
+        target domain.
+
+    target : torch.Tensor
+        Target/ground-truth data
+
+    output : list of torch.Tensor or torch.Tensor
+        List of predicted data (model's outputs) for ensemble predictions,
+        or a single tensor (which will be wrapped in a list automatically).
+        For proper CRPS computation, at least 2 ensemble members are required.
+
+    beta : int
+        Power parameter for the absolute differences in the CRPS computation.
+    """
+
+    def __init__(self, ignore_nans: bool) -> None:
+        super(CRPSLoss, self).__init__()
+        self.ignore_nans = ignore_nans
+
+    def forward(self, target: torch.Tensor, output, beta: int = 1) -> torch.Tensor:
+
+        if isinstance(output, torch.Tensor):
+            output = [output]
+        
+        if self.ignore_nans:
+            nans_idx = torch.isnan(target)
+            target = target[~nans_idx]
+            output = [out[~nans_idx] for out in output]
+
+        # Number of ensemble members
+        M = len(output)
+
+        # Error between target and each prediction
+        first_term = 0.0
+        for i in range(M):
+            first_term += torch.abs(target - output[i]) ** beta
+        first_term = first_term / M
+
+        # Difference between all pairs of predictions
+        if M > 1:
+            second_term = 0.0
+            for i in range(M):
+                for j in range(M):
+                    second_term += torch.abs(output[i] - output[j]) ** beta
+            second_term = second_term / (2*M*(M-1)) # Fair CRPS
+        else: # Just return the first term
+            second_term = 0.0
+
+        # Final loss
+        loss = torch.mean(first_term - second_term)
+
+        return loss
