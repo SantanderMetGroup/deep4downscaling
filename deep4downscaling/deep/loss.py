@@ -498,8 +498,9 @@ class Asym(nn.Module):
 class CRPSLoss(nn.Module):
 
     """
-    Continuous Ranked Probability Score (CRPS). It is possible to compute
-    this metric over a target dataset with nans.
+    Fair Continuous Ranked Probability Score (CRPS). It is possible to compute
+    this metric over a target dataset with nans. This is the same as the CRPS,
+    but the second term is divided by 2*M*(M-1) instead of M**2.
 
     Parameters
     ----------
@@ -543,12 +544,14 @@ class CRPSLoss(nn.Module):
         first_term = first_term / M
 
         # Difference between all pairs of predictions
-        # We divide by M**2 and not by 2*M**2 as we do not repeat the same pairs
-        second_term = 0.0
-        for i in range(M):
-            for j in range(i + 1, M): # We do not repeat the same pairs
-                second_term += torch.abs(output[i] - output[j]) ** beta
-        second_term = second_term / (M ** 2)
+        if M > 1:
+            second_term = 0.0
+            for i in range(M):
+                for j in range(M):
+                    second_term += torch.abs(output[i] - output[j]) ** beta
+            second_term = second_term / (2*M*(M-1)) # Fair CRPS
+        else: # Just return the first term
+            second_term = 0.0
 
         # Final loss
         loss = torch.mean(first_term - second_term)
