@@ -6,6 +6,7 @@ in the docstring of each class.
 Authors:
     Jose González-Abad
     Alfonso Hernanz
+    Carlota García
 """
 
 import torch

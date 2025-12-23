@@ -5,6 +5,7 @@ downscaling models.
 Authors:
     Jose González-Abad
     Alfonso Hernanz
+    Carlota García
 """
 
 import os
