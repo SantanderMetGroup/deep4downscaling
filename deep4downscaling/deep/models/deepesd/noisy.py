@@ -1,3 +1,11 @@
+"""
+This module contains the NoisyDeepESD architecture for statistical downscaling.
+
+Authors:
+    Jose González-Abad
+    Carlota García
+"""
+
 import torch
 from math import ceil
 

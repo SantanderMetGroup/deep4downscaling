@@ -1,3 +1,10 @@
+"""
+This module contains shared building blocks for deep learning models.
+
+Authors:
+    Jose González-Abad
+"""
+
 import torch
 import torch.nn as nn
 

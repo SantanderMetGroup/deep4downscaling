@@ -1,3 +1,10 @@
+"""
+This module contains the DeepESD architecture for statistical downscaling.
+
+Authors:
+    Jose González-Abad
+"""
+
 import torch
 
 class DeepESDtas(torch.nn.Module):

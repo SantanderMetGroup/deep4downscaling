@@ -1,3 +1,10 @@
+"""
+This module contains the U-Net architecture for statistical downscaling.
+
+Authors:
+    Jose González-Abad
+"""
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F

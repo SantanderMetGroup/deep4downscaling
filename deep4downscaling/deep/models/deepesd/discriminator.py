@@ -1,3 +1,11 @@
+"""
+This module contains the DeepESD discriminator (cGAN) for statistical downscaling.
+
+Authors:
+    Alfonso Hernanz
+    Jose González-Abad
+"""
+
 import torch
 
 class DeepESD_Discriminator(torch.nn.Module):
