@@ -51,19 +51,15 @@ class TransformerBlock(nn.Module):
     def __init__(self, dim, num_heads, mlp_dim, dropout=0.):
         super().__init__()
 
-        self.attention = nn.Sequential(
-            nn.LayerNorm(dim),
-            MultiHeadAttention(dim, num_heads, dropout)
-        )
+        self.attention = nn.Sequential(nn.LayerNorm(dim),
+                                       MultiHeadAttention(dim, num_heads, dropout))
 
-        self.mlp = nn.Sequential(
-            nn.LayerNorm(dim),
-            nn.Linear(dim, mlp_dim),
-            nn.GELU(),
-            nn.Dropout(dropout),
-            nn.Linear(mlp_dim, dim),
-            nn.Dropout(dropout)
-        )
+        self.mlp = nn.Sequential(nn.LayerNorm(dim),
+                                 nn.Linear(dim, mlp_dim),
+                                 nn.GELU(),
+                                 nn.Dropout(dropout),
+                                 nn.Linear(mlp_dim, dim),
+                                 nn.Dropout(dropout))
 
     def forward(self, x):
         x = x + self.attention(x)
