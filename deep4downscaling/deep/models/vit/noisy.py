@@ -2,13 +2,19 @@ import torch
 import torch.nn as nn
 import math
 
-from .blocks import TransformerBlock
+from .blocks import NoiseEmbedding, TransformerBlockCLN
 
-class ViT(nn.Module):
+class NoisyViT(nn.Module):
     """
-    Vision Transformer (ViT) model for statistical downscaling. This model assumes that
+    Noisy Vision Transformer model for statistical downscaling. This model assumes that
     the spatial resolutions of the input and output tensors are powers of 2, and that
     the spatial resolution of the output is a multiple of the spatial resolution of the input.
+    The model injects noise into the encoder to generate stochastic outputs following the
+    implementation in Lang et al. (2024).
+
+    Lang, S., Alexe, M., Clare, M. C., Roberts, C., Adewoyin, R., Bouallègue, Z. B., ... & Leutbecher, M. (2024).
+    AIFS-CRPS: ensemble forecasting using a model trained with a loss function based on the continuous ranked
+    probability score. arXiv preprint arXiv:2412.15832.
     
     Parameters
     ----------
@@ -29,14 +35,23 @@ class ViT(nn.Module):
         Dimension of the token embeddings. This dimensions must be divisible by
         the number of heads.
 
-    num_heads : int
-        Number of attention heads.
-
     depth : int
         Number of transformer encoder blocks.
 
+    num_heads : int
+        Number of attention heads.
+
     mlp_dim : int
         Dimension of the MLP in transformer blocks.
+
+    noise_channels : int
+        Number of noise channels to inject into the input. Must be greater than 0.
+
+    noise_dim : int
+        Dimension of the noise embeddings.
+
+    members_for_training : int, optional
+        Number of members to train in ensemble mode. Default is 2.
 
     dropout : float, optional
         Dropout probability. Default is 0.0.
@@ -58,8 +73,10 @@ class ViT(nn.Module):
     """
 
     def __init__(self, x_shape, y_shape, patch_size, dim, depth, num_heads,
-                 mlp_dim, dropout=0., orog=None, overlap=0):
-        super(ViT, self).__init__()
+                 mlp_dim,  noise_channels, noise_dim,
+                 members_for_training=2,
+                 dropout=0., orog=None, overlap=0):
+        super(NoisyViT, self).__init__()
 
         if (len(x_shape) != 4) or (len(y_shape) != 2):
             raise ValueError('X must be 4D (B, C, H, W) and Y must be 2D (B, N_outputs)')
@@ -75,9 +92,14 @@ class ViT(nn.Module):
         self.depth = depth
         self.num_heads = num_heads
         self.mlp_dim = mlp_dim
+        self.members_for_training = members_for_training
         self.dropout = dropout
         self.orog = orog
         self.overlap = overlap
+
+        # CLN parameters
+        self.noise_channels = noise_channels
+        self.noise_dim = noise_dim
 
         # Coarse grid size (number of tokens in each dimension)
         self.H_tokens = x_shape[2] // patch_size
@@ -110,9 +132,12 @@ class ViT(nn.Module):
         # Dropout for embeddings
         self.dropout_emb = nn.Dropout(dropout)
 
+        # Noise embedding
+        self.noise_embedding = NoiseEmbedding(noise_channels, noise_dim)
+
         # Transformer blocks
-        self.transformer_blocks = nn.Sequential(*[
-            TransformerBlock(dim, num_heads, mlp_dim, dropout)
+        self.transformer_blocks = nn.ModuleList([
+            TransformerBlockCLN(dim, num_heads, mlp_dim, noise_dim, dropout)
             for _ in range(depth)
         ])
 
@@ -140,53 +165,75 @@ class ViT(nn.Module):
         self.register_buffer('norm_mask', self.fold(self.window * ones))
 
     def forward(self, x, orography=None):
+        
         B = x.shape[0]
 
-        # Patch embedding
-        x = self.patch_embedding(x)                 # (B, D, Ht, Wt)
-        x = x.flatten(2).transpose(1, 2)            # (B, N, D)
+        is_ensemble_mode = self.training or torch.is_grad_enabled()
 
-        # Add positional embeddings
-        x = x + self.pos_embedding                  # (B, N, D)
-        x = self.dropout_emb(x)                     # (B, N, D)
+        if is_ensemble_mode:
+            members_to_iterate = self.members_for_training
+        else:
+            members_to_iterate = 1
 
-        # Transformer
-        x = self.transformer_blocks(x)              # (B, N, D)
-        x = self.norm(x)                            # (B, N, D)
+        out_members = []
+        for i in range(members_to_iterate):
 
-        # Orography conditioning (if provided)
-        if self.orog is not None:
-            # Replicate across batch dimension
-            orog = self.orog.repeat(B, 1, 1)
+            # Sample noise
+            z = torch.randn(B, self.num_patches, self.noise_channels, device=x.device)
+            z = self.noise_embedding(z)
 
-            # (B, H_out, W_out) -> (B, H_tokens, scale, W_tokens, scale)
-            orog = orog.view(B, self.H_tokens, self.scale,
-                             self.W_tokens, self.scale)
+            # Patch embedding
+            x_ = self.patch_embedding(x)                 # (B, D, Ht, Wt)
+            x_ = x_.flatten(2).transpose(1, 2)            # (B, N, D)
 
-            # Permute to group patches: (B, H_tokens, W_tokens, scale, scale)
-            orog = orog.permute(0, 1, 3, 2, 4).contiguous()
+            # Add positional embeddings
+            x_ = x_ + self.pos_embedding                  # (B, N, D)
+            x_ = self.dropout_emb(x_)                     # (B, N, D)
 
-            # Flatten each patch: (B, H_tokens, W_tokens, scale * scale)
-            orog = orog.view(B, self.H_tokens, self.W_tokens,
-                             self.scale * self.scale)
+            # Transformer
+            for block in self.transformer_blocks:
+                x_ = block(x_, z)
+            x_ = self.norm(x_)                            # (B, N, D)
 
-            # Flatten spatial token dimensions: (B, num_patches, scale * scale)
-            orog = orog.view(B, self.num_patches, self.scale * self.scale)
-            
-            # Project orography patches to token dimension
-            orog_features = self.orography_embedding(orog)  # (B, N, D)
-            
-            # Add orography features to token embeddings
-            x = x + orog_features
+            # Orography conditioning (if provided)
+            if self.orog is not None:
+                # Replicate across batch dimension
+                orog = self.orog.repeat(B, 1, 1)
 
-        # Per-token decoding
-        x = self.token_decoder(x)                   # (B, N, kernel_size**2)
+                # (B, H_out, W_out) -> (B, H_tokens, scale, W_tokens, scale)
+                orog = orog.view(B, self.H_tokens, self.scale,
+                                self.W_tokens, self.scale)
 
-        # Overlap-add reconstruction
-        x = x.transpose(1, 2)                       # (B, kernel_size**2, N)
-        x = x * self.window                         # Apply window
-        out = self.fold(x)                          # Fold into spatial grid
-        out = out / self.norm_mask.clamp(min=1e-8)  # Normalize blended regions
+                # Permute to group patches: (B, H_tokens, W_tokens, scale, scale)
+                orog = orog.permute(0, 1, 3, 2, 4).contiguous()
 
-        return out.view(B, -1)
+                # Flatten each patch: (B, H_tokens, W_tokens, scale * scale)
+                orog = orog.view(B, self.H_tokens, self.W_tokens,
+                                self.scale * self.scale)
 
+                # Flatten spatial token dimensions: (B, num_patches, scale * scale)
+                orog = orog.view(B, self.num_patches, self.scale * self.scale)
+                
+                # Project orography patches to token dimension
+                orog_features = self.orography_embedding(orog)  # (B, N, D)
+                
+                # Add orography features to token embeddings
+                x_ = x_ + orog_features
+
+            # Per-token decoding
+            x_ = self.token_decoder(x_)                   # (B, N, kernel_size**2)
+
+            # Overlap-add reconstruction
+            x_ = x_.transpose(1, 2)                       # (B, kernel_size**2, N)
+            x_ = x_ * self.window                         # Apply window
+            out = self.fold(x_)                          # Fold into spatial grid
+            out = out / self.norm_mask.clamp(min=1e-8)  # Normalize blended regions
+            out = out.view(B, -1)
+
+            out_members.append(out)
+
+        is_ensemble_mode = self.training or torch.is_grad_enabled()
+        if is_ensemble_mode:
+            return out_members
+        else:
+            return out_members[0]

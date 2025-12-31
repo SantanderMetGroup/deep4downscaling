@@ -44,7 +44,6 @@ class MultiHeadAttention(nn.Module):
 
         return output
 
-
 class TransformerBlock(nn.Module):
     """Transformer encoder block with multi-head attention and MLP."""
 
@@ -63,5 +62,58 @@ class TransformerBlock(nn.Module):
 
     def forward(self, x):
         x = x + self.attention(x)
+        x = x + self.mlp(x)
+        return x
+
+class NoiseEmbedding(nn.Module):
+    """Noise Embedding."""
+
+    def __init__(self, noise_channels, noise_dim):
+        super().__init__()
+        self.mlp = nn.Sequential(nn.Linear(noise_channels, noise_dim),
+                                 nn.GELU(),
+                                 nn.Linear(noise_dim, noise_dim))
+        self.norm = nn.LayerNorm(noise_dim)
+
+    def forward(self, xi):
+        z = self.mlp(xi)
+        return self.norm(z)
+
+class ConditionalLayerNorm(nn.Module):
+    """Conditional Layer Normalization."""
+
+    def __init__(self, dim, noise_dim):
+        super().__init__()
+        self.dim = dim
+        self.norm = nn.LayerNorm(dim, elementwise_affine=False)
+
+        self.gamma = nn.Linear(noise_dim, dim)
+        self.beta = nn.Linear(noise_dim, dim)
+
+    def forward(self, x, z):
+        x_norm = self.norm(x)
+        gamma = self.gamma(z)
+        beta = self.beta(z)
+        return gamma * x_norm + beta
+
+class TransformerBlockCLN(nn.Module):
+    """Transformer encoder block with multi-head attention and MLP, conditioned on noise
+       through conditional layer normalization."""
+
+    def __init__(self, dim, num_heads, mlp_dim, noise_dim, dropout=0.):
+        super().__init__()
+
+        self.norm1 = ConditionalLayerNorm(dim, noise_dim)
+        self.attn = MultiHeadAttention(dim, num_heads, dropout)
+
+        self.mlp = nn.Sequential(nn.LayerNorm(dim),
+                                 nn.Linear(dim, mlp_dim),
+                                 nn.GELU(),
+                                 nn.Dropout(dropout),
+                                 nn.Linear(mlp_dim, dim),
+                                 nn.Dropout(dropout))
+
+    def forward(self, x, z):
+        x = x + self.attn(self.norm1(x, z))
         x = x + self.mlp(x)
         return x
