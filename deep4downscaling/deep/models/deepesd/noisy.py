@@ -92,7 +92,9 @@ class NoisyDeepESD(torch.nn.Module):
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
 
-        if self.training:
+        is_ensemble_mode = self.training or torch.is_grad_enabled()
+
+        if is_ensemble_mode:
             members_to_iterate = self.members_for_training
         else:
             members_to_iterate = 1
@@ -127,7 +129,7 @@ class NoisyDeepESD(torch.nn.Module):
                 out_member = torch.relu(out_member)
             out_members.append(out_member)
         
-        if self.training:
+        if is_ensemble_mode:
             return out_members
         else:
             return out_members[0]
