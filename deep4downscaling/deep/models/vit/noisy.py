@@ -65,6 +65,10 @@ class NoisyViT(nn.Module):
         Overlap between patches. Default is 0. This is used to create a smooth transition
         between patches, thus avoiding artifacts at the boundaries of the patches.
 
+    last_relu : bool, optional
+        If set to True, the output of the last linear decoder is passed through a
+        ReLU activation function. By default is set to False.
+
     Notes
     -----
     The model uses a per-token linear decoder at the end that transforms each
@@ -75,7 +79,8 @@ class NoisyViT(nn.Module):
     def __init__(self, x_shape, y_shape, patch_size, dim, depth, num_heads,
                  mlp_dim,  noise_channels, noise_dim,
                  members_for_training=2,
-                 dropout=0., orog=None, overlap=0):
+                 dropout=0., orog=None, overlap=0,
+                 last_relu=False):
         super(NoisyViT, self).__init__()
 
         if (len(x_shape) != 4) or (len(y_shape) != 2):
@@ -96,6 +101,7 @@ class NoisyViT(nn.Module):
         self.dropout = dropout
         self.orog = orog
         self.overlap = overlap
+        self.last_relu = last_relu
 
         # CLN parameters
         self.noise_channels = noise_channels
@@ -229,6 +235,9 @@ class NoisyViT(nn.Module):
             out = self.fold(x_)                          # Fold into spatial grid
             out = out / self.norm_mask.clamp(min=1e-8)  # Normalize blended regions
             out = out.view(B, -1)
+
+            if self.last_relu:
+                out = torch.relu(out)
 
             out_members.append(out)
 

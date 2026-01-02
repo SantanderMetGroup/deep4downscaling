@@ -509,6 +509,9 @@ class CRPSLoss(nn.Module):
         Whether to allow the loss function to ignore nans in the
         target domain.
 
+    beta : int
+        Power parameter for the absolute differences in the CRPS computation.
+
     target : torch.Tensor
         Target/ground-truth data
 
@@ -516,9 +519,6 @@ class CRPSLoss(nn.Module):
         List of predicted data (model's outputs) for ensemble predictions,
         or a single tensor (which will be wrapped in a list automatically).
         For proper CRPS computation, at least 2 ensemble members are required.
-
-    beta : int
-        Power parameter for the absolute differences in the CRPS computation.
     """
 
     def __init__(self, ignore_nans: bool) -> None:
@@ -557,4 +557,125 @@ class CRPSLoss(nn.Module):
         # Final loss
         loss = torch.mean(first_term - second_term)
 
+        return loss
+
+class CRPSSpectralLoss(nn.Module):
+
+    """
+    Fair Continuous Ranked Probability Score (CRPS). Following Nordhagen et al. (2025),
+    we compute the CRPS both over the field (standard CRPS) and the spectral domain. The
+    spectral CRPS is computed by applying a Fourier transform to the field and then computing
+    the CRPS over the spectral domain.
+
+    Nordhagen, E. M., Haugen, H. H., Salihi, A. F. S., Ingstad, M. S.,
+    Nipen, T. N., Seierstad, I. A., ... & Kristiansen, J. (2025).
+    High-Resolution Probabilistic Data-Driven Weather Modeling with a
+    Stretched-Grid. arXiv preprint arXiv:2511.23043.
+
+    Parameters
+    ----------
+    ignore_nans : bool
+        Whether to allow the loss function to ignore nans in the
+        target domain. For now, this only applies for the CRPS over
+        the field.
+
+    H_shape : int
+        Height of the spatial domain.
+
+    W_shape : int
+        Width of the spatial domain.
+
+    beta : int
+        Power parameter for the absolute differences in the CRPS computation.
+
+    lambda_spectral : float
+        Weight for the spectral CRPS.
+
+    target : torch.Tensor
+        Target/ground-truth data
+
+    output : list of torch.Tensor or torch.Tensor
+        List of predicted data (model's outputs) for ensemble predictions,
+        or a single tensor (which will be wrapped in a list automatically).
+        For proper CRPS computation, at least 2 ensemble members are required.
+    """
+
+    def __init__(self, ignore_nans: bool,
+                 H_shape: int, W_shape: int, 
+                 beta: int = 1,
+                 lambda_spectral: float = 0.1) -> None:
+        super(CRPSSpectralLoss, self).__init__()
+        self.ignore_nans = ignore_nans
+        self.H_shape = H_shape
+        self.W_shape = W_shape
+        self.beta = beta
+        self.lambda_spectral = lambda_spectral
+
+    def _CRPS_pointwise(self, target: torch.Tensor, output) -> torch.Tensor:
+        
+        if self.ignore_nans:
+            nans_idx = torch.isnan(target)
+            target = target[~nans_idx]
+            output = [out[~nans_idx] for out in output]
+
+        # Number of ensemble members
+        M = len(output)
+
+        # Error between target and each prediction
+        first_term = 0.0
+        for i in range(M):
+            first_term += torch.abs(target - output[i]) ** self.beta
+        first_term = first_term / M
+
+        # Difference between all pairs of predictions
+        if M > 1:
+            second_term = 0.0
+            for i in range(M):
+                for j in range(M):
+                    second_term += torch.abs(output[i] - output[j]) ** self.beta
+            second_term = second_term / (2*M*(M-1)) # Fair CRPS
+        else: # Just return the first term
+            second_term = 0.0
+
+        # Final loss
+        loss = torch.mean(first_term - second_term)
+
+        return loss
+
+    def _FFT(self, data: torch.Tensor) -> torch.Tensor:
+
+        if isinstance(data, torch.Tensor): # For the target
+            data = [data]
+
+        B = data[0].shape[0]
+        if data[0].ndim == 3: M = data[0].shape[1] # Number of ensemble members
+
+        # Reshape to spatial dimensions
+        if data[0].ndim == 2:
+            data = [member.view(B, self.H_shape, self.W_shape) for member in data]
+        elif data[0].ndim == 3:
+            data = [member.view(B, M, self.H_shape, self.W_shape) for member in data]
+
+        # Compute FFT
+        data = [torch.fft.rfft2(member) for member in data]
+
+        # TODO: Filter out high frequencies (Nyquist limit)
+
+        return data
+        
+    def forward(self, target: torch.Tensor, output) -> torch.Tensor:
+
+        if isinstance(output, torch.Tensor):
+            output = [output]
+
+        # Compute standard CRPS
+        crps_field = self._CRPS_pointwise(target, output)
+
+        # Compute spectral CRPS
+        target_fft = self._FFT(target)[0]
+        output_fft = self._FFT(output)
+        crps_spectral = self._CRPS_pointwise(target_fft, output_fft)
+
+        # Compute total loss
+        loss = crps_field + self.lambda_spectral * crps_spectral
         return loss
