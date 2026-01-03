@@ -2,7 +2,7 @@ import torch
 import torch.nn as nn
 import math
 
-from .blocks import NoiseEmbedding, TransformerBlockCLN
+from .blocks import NoiseEmbedding, TransformerBlockCLN, CNNBlock
 
 class NoisyViT(nn.Module):
     """
@@ -149,8 +149,11 @@ class NoisyViT(nn.Module):
 
         self.norm = nn.LayerNorm(dim)
 
+        # Pre-decoder CNN blocks
+        self.cnn_block = CNNBlock(dim)
+
         # Per-token linear decoder: outputs patches (possibly overlapping)
-        self.token_decoder = nn.Linear(dim, self.kernel_size**2)
+        self.token_decoder = nn.Linear(dim, self.scale**2)
 
         # Folding layer for overlap-add reconstruction
         self.fold = nn.Fold(output_size=(self.H_out, self.W_out),
@@ -226,22 +229,28 @@ class NoisyViT(nn.Module):
                 # Add orography features to token embeddings
                 x_ = x_ + orog_features
 
+            # Pre-decoder CNN block
+            x_ = x_.transpose(1, 2).view(B, self.dim, self.H_tokens, self.W_tokens)     
+            x_ = self.cnn_block(x_)
+            x_ = x_.view(B, self.dim, self.num_patches).transpose(1, 2)
+
             # Per-token decoding
             x_ = self.token_decoder(x_)                   # (B, N, kernel_size**2)
 
             # Overlap-add reconstruction
+            # TODO: For some reason this is required for CRPS_SPECTRAL loss to work.
             x_ = x_.transpose(1, 2)                       # (B, kernel_size**2, N)
             x_ = x_ * self.window                         # Apply window
-            out = self.fold(x_)                          # Fold into spatial grid
-            out = out / self.norm_mask.clamp(min=1e-8)  # Normalize blended regions
-            out = out.view(B, -1)
+            x_ = self.fold(x_)                          # Fold into spatial grid
+            x_ = x_ / self.norm_mask.clamp(min=1e-8)  # Normalize blended regions
 
             if self.last_relu:
-                out = torch.relu(out)
+                x_ = torch.relu(x_)
+
+            out = x_.view(B, -1)
 
             out_members.append(out)
 
-        is_ensemble_mode = self.training or torch.is_grad_enabled()
         if is_ensemble_mode:
             return out_members
         else:

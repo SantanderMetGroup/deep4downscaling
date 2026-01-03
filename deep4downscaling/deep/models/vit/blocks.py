@@ -117,3 +117,15 @@ class TransformerBlockCLN(nn.Module):
         x = x + self.attn(self.norm1(x, z))
         x = x + self.mlp(x)
         return x
+
+class CNNBlock(nn.Module):
+    """CNN Block. Conv2d, GELU, Conv2d."""
+
+    def __init__(self, dim):
+        super().__init__()
+        self.block = nn.Sequential(nn.Conv2d(dim, dim, kernel_size=3, padding=1, bias=False),
+                                   nn.GELU(),
+                                   nn.Conv2d(dim, dim, kernel_size=3, padding=1, bias=False))
+
+    def forward(self, x):
+        return x + self.block(x)

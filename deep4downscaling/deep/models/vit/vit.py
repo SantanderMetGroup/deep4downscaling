@@ -2,7 +2,7 @@ import torch
 import torch.nn as nn
 import math
 
-from .blocks import TransformerBlock
+from .blocks import TransformerBlock, CNNBlock
 
 class ViT(nn.Module):
     """
@@ -46,10 +46,6 @@ class ViT(nn.Module):
         as the output data. If provided, the token decoding will be conditioned on the orography
         patches.
 
-    overlap : int, optional
-        Overlap between patches. Default is 0. This is used to create a smooth transition
-        between patches, thus avoiding artifacts at the boundaries of the patches.
-
     Notes
     -----
     The model uses a per-token linear decoder at the end that transforms each
@@ -58,7 +54,7 @@ class ViT(nn.Module):
     """
 
     def __init__(self, x_shape, y_shape, patch_size, dim, depth, num_heads,
-                 mlp_dim, dropout=0., orog=None, overlap=0):
+                 mlp_dim, dropout=0., orog=None, last_relu=False):
         super(ViT, self).__init__()
 
         if (len(x_shape) != 4) or (len(y_shape) != 2):
@@ -77,8 +73,8 @@ class ViT(nn.Module):
         self.mlp_dim = mlp_dim
         self.dropout = dropout
         self.orog = orog
-        self.overlap = overlap
-
+        self.last_relu = last_relu
+        
         # Coarse grid size (number of tokens in each dimension)
         self.H_tokens = x_shape[2] // patch_size
         self.W_tokens = x_shape[3] // patch_size
@@ -93,9 +89,6 @@ class ViT(nn.Module):
 
         if self.scale * self.H_tokens != self.H_out:
             raise ValueError("Output resolution must be divisible by input resolution")
-
-        # Overlapping patch parameters
-        self.kernel_size = self.scale + 2 * self.overlap
 
         # Orography patch embedding: projects (scale * scale) patch to token dimension
         if self.orog is not None:
@@ -118,26 +111,12 @@ class ViT(nn.Module):
 
         self.norm = nn.LayerNorm(dim)
 
-        # Per-token linear decoder: outputs patches (possibly overlapping)
-        self.token_decoder = nn.Linear(dim, self.kernel_size**2)
+        # Pre-decoder CNN blocks
+        self.cnn_block = CNNBlock(dim)
 
-        # Folding layer for overlap-add reconstruction
-        self.fold = nn.Fold(output_size=(self.H_out, self.W_out),
-                            kernel_size=self.kernel_size,
-                            padding=self.overlap,
-                            stride=self.scale)
+        # Per-token linear decoder: outputs patches
+        self.token_decoder = nn.Linear(dim, self.scale**2)
 
-        # Windowing and normalization mask
-        if self.overlap > 0:
-            window = torch.hann_window(self.kernel_size, periodic=False)
-            window = window.unsqueeze(0) * window.unsqueeze(1)
-            self.register_buffer('window', window.view(-1, 1))
-        else:
-            self.register_buffer('window', torch.ones(self.scale**2, 1))
-
-        # Pre-compute normalization mask to handle overlapping regions
-        ones = torch.ones(1, 1, self.num_patches)
-        self.register_buffer('norm_mask', self.fold(self.window * ones))
 
     def forward(self, x, orography=None):
         B = x.shape[0]
@@ -179,14 +158,16 @@ class ViT(nn.Module):
             # Add orography features to token embeddings
             x = x + orog_features
 
+        # Pre-decoder CNN block
+        x = x.transpose(1, 2).view(B, self.dim, self.H_tokens, self.W_tokens)     
+        x = self.cnn_block(x)
+        x = x.view(B, self.dim, self.num_patches).transpose(1, 2)
+
         # Per-token decoding
         x = self.token_decoder(x)                   # (B, N, kernel_size**2)
 
-        # Overlap-add reconstruction
-        x = x.transpose(1, 2)                       # (B, kernel_size**2, N)
-        x = x * self.window                         # Apply window
-        out = self.fold(x)                          # Fold into spatial grid
-        out = out / self.norm_mask.clamp(min=1e-8)  # Normalize blended regions
+        if self.last_relu:
+            x = torch.relu(x)
 
-        return out.view(B, -1)
+        return x.view(B, -1)
 
