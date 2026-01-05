@@ -577,7 +577,7 @@ class CRPSSpectralLoss(nn.Module):
     ignore_nans : bool
         Whether to allow the loss function to ignore nans in the
         target domain. For now, this only applies for the CRPS over
-        the field.
+        the field, not in the spectral domain.
 
     H_shape : int
         Height of the spatial domain.
@@ -610,10 +610,11 @@ class CRPSSpectralLoss(nn.Module):
         self.W_shape = W_shape
         self.beta = beta
         self.lambda_spectral = lambda_spectral
+        self.filter_nans = False # Control whether to filter out nans in _CRPS_pointwise
 
     def _CRPS_pointwise(self, target: torch.Tensor, output) -> torch.Tensor:
         
-        if self.ignore_nans:
+        if self.ignore_nans and self.filter_nans:
             nans_idx = torch.isnan(target)
             target = target[~nans_idx]
             output = [out[~nans_idx] for out in output]
@@ -644,8 +645,14 @@ class CRPSSpectralLoss(nn.Module):
 
     def _FFT(self, data: torch.Tensor) -> torch.Tensor:
 
+        # It does not make sense to filter out nans in the spectral domain
+        self.filter_nans = False
+
+        # Fill nans with 0 for the FFT computation
         if isinstance(data, torch.Tensor): # For the target
-            data = [data]
+            data = [torch.nan_to_num(data, nan=0.0)]
+        else:
+            data = [torch.nan_to_num(d, nan=0.0) for d in data]
 
         B = data[0].shape[0]
         if data[0].ndim == 3: M = data[0].shape[1] # Number of ensemble members
@@ -669,6 +676,7 @@ class CRPSSpectralLoss(nn.Module):
             output = [output]
 
         # Compute standard CRPS
+        self.filter_nans = True
         crps_field = self._CRPS_pointwise(target, output)
 
         # Compute spectral CRPS
