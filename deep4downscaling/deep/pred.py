@@ -76,10 +76,8 @@ def _predict(model: torch.nn.Module, device: str,
                 # Initialize the torch accumulating all batches
                 if i == 0:
                     # TODO: Compute predictions by batches when the model returns
-                    # multiple tensors or a list of torch.Tensor
+                    # multiple tensors
                     if isinstance(batch_pred, tuple):
-                        raise ValueError('Not implemented. Set batch_size=None')
-                    elif isinstance(batch_pred, list):
                         raise ValueError('Not implemented. Set batch_size=None')
                     y_pred = torch.zeros(num_samples, *batch_pred.shape[1:])
 
@@ -87,8 +85,6 @@ def _predict(model: torch.nn.Module, device: str,
 
     if isinstance(y_pred, tuple): # Handle DL models returning multiple tensors
         y_pred = (x.cpu().numpy() for x in y_pred)
-    elif isinstance(y_pred, list): # Handle DL models returning list of torch.Tensor
-        y_pred = [x.cpu().numpy() for x in y_pred]
     else:
         y_pred = y_pred.cpu().numpy()
 
@@ -539,49 +535,5 @@ def compute_preds_ber_gamma(x_data: xr.Dataset, model: torch.nn.Module, threshol
         data_final = data_pred[0]
     else:
         data_final = xr.concat(data_pred, dim='member')
-
-    return data_final
-
-def compute_preds_multihead(x_data: xr.Dataset, model: torch.nn.Module, device: str,
-                            var_target: str,
-                            mask: xr.Dataset=None, template: xr.Dataset=None,
-                            batch_size: int=None,
-                            spatial_dims: tuple[str, str]=('lat', 'lon')) -> xr.Dataset:
-
-    """
-    TODO: Add documentation.
-    """
-    
-    x_data_arr = trans.xarray_to_numpy(x_data)
-
-    # Check for the mask and template
-    if mask and template:
-        raise ValueError('Provide either a mask or a template.')
-    if (not mask) and (not template):
-        raise ValueError('Provide either a mask or a template, not both.')
-
-    # Add channel dimension for one-dimensional predictors
-    if len(list(x_data.keys())) <= 1:
-        x_data_arr = x_data_arr[:, None, :, :] # Add empty channel dimension
-
-    time_pred = x_data['time'].values
-
-    # Compute predictions
-    data_aux = _predict(model=model, device=device, x_data=x_data_arr,
-                        batch_size=batch_size)
-
-    if mask:
-        data_aux_list = []
-        for i in range(len(data_aux)):
-            data_aux_list.append(_pred_to_xarray(data_pred=data_aux[i], time_pred=time_pred,
-                                                 var_target=var_target, mask=mask,
-                                                 spatial_dims=spatial_dims))
-        data_final = xr.concat(data_aux_list, dim='member')
-    elif template:
-        data_aux_list = []
-        for i in range(len(data_aux)):
-            data_aux_list.append(_pred_stations_to_xarray(data_pred=data_aux[i], time_pred=time_pred,
-                                                          var_target=var_target, template=template))
-        data_final = xr.concat(data_aux_list, dim='member')
 
     return data_final
