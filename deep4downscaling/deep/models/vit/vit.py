@@ -46,15 +46,19 @@ class ViT(nn.Module):
         as the output data. If provided, the token decoding will be conditioned on the orography
         patches.
 
-    Notes
-    -----
-    The model uses a per-token linear decoder at the end that transforms each
-    token embedding into a spatial patch of size (scale * scale + 2 * overlap), which are
-    then reshaped and tiled to form the final high-resolution output.
+    last_relu : bool, optional
+        If True, applies ReLU activation to the final output (only applicable when
+        stochastic=False). Default is False. 
+
+    stochastic : bool, optional
+        If True, the model outputs both mean and log variance for use with 
+        NLLBerGammaLoss. The output is the concatenation of p, shape and
+        scale. If False, the model outputs only the predicted values.
+        Default is False.
     """
 
     def __init__(self, x_shape, y_shape, patch_size, dim, depth, num_heads,
-                 mlp_dim, dropout=0., orog=None, last_relu=False):
+                 mlp_dim, dropout=0., orog=None, last_relu=False, stochastic=False):
         super(ViT, self).__init__()
 
         if (len(x_shape) != 4) or (len(y_shape) != 2):
@@ -74,6 +78,7 @@ class ViT(nn.Module):
         self.dropout = dropout
         self.orog = orog
         self.last_relu = last_relu
+        self.stochastic = stochastic
         
         # Coarse grid size (number of tokens in each dimension)
         self.H_tokens = x_shape[2] // patch_size
@@ -115,7 +120,13 @@ class ViT(nn.Module):
         self.cnn_block = CNNBlock(dim)
 
         # Per-token linear decoder: outputs patches
-        self.token_decoder = nn.Linear(dim, self.scale**2)
+        # For stochastic models (Deep Ensembles), we need two decoders for mean and log_var
+        if self.stochastic:
+            self.token_decoder_p = nn.Linear(dim, self.scale**2)
+            self.token_decoder_log_shape = nn.Linear(dim, self.scale**2)
+            self.token_decoder_log_scale = nn.Linear(dim, self.scale**2)
+        else:
+            self.token_decoder = nn.Linear(dim, self.scale**2)
 
 
     def forward(self, x, orography=None):
@@ -164,10 +175,25 @@ class ViT(nn.Module):
         x = x.view(B, self.dim, self.num_patches).transpose(1, 2)
 
         # Per-token decoding
-        x = self.token_decoder(x)                   # (B, N, kernel_size**2)
-
-        if self.last_relu:
-            x = torch.relu(x)
-
-        return x.view(B, -1)
+        if self.stochastic:
+            
+            p = torch.sigmoid(self.token_decoder_p(x))       # (B, N, kernel_size**2)
+            log_shape = self.token_decoder_log_shape(x) # (B, N, kernel_size**2)
+            log_scale = self.token_decoder_log_scale(x) # (B, N, kernel_size**2)
+            
+            # Flatten and concatenate
+            p = p.view(B, -1)
+            log_shape = log_shape.view(B, -1)
+            log_scale = log_scale.view(B, -1)
+            
+            # Return concatenated parameters
+            return torch.cat((p, log_shape, log_scale), dim=1)
+        else:
+            # Standard deterministic output
+            x = self.token_decoder(x)               # (B, N, kernel_size**2)
+            
+            if self.last_relu:
+                x = torch.relu(x)
+            
+            return x.view(B, -1)
 
