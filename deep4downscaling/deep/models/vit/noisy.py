@@ -65,11 +65,19 @@ class NoisyViT(nn.Module):
         Overlap between patches. Default is 0. This is used to create a smooth transition
         between patches, thus avoiding artifacts at the boundaries of the patches. This issue
         is especially noticeable when injecting noise, as this noise is injected independently in
-        each patch embedding.
+        each patch embedding. (See Notes for more details.)
 
     last_relu : bool, optional
         If True, applies ReLU activation to the final output (only applicable when
-        stochastic=False). Default is False. 
+        stochastic=False). Default is False.
+
+    Notes
+    -----
+    Overlap-Add Reconstruction (only applicable when overlap > 0):
+    1. Each token decodes to enlarged (scale + 2 * overlap)**2 patches
+    2. Hann window applied: strong at center, fades to zero at edges
+    3. Patches placed with stride=scale, overlapping regions are summed
+    4. Normalization divides by accumulated weights to get proper average
     """
 
     def __init__(self, x_shape, y_shape, patch_size, dim, depth, num_heads,
@@ -234,7 +242,8 @@ class NoisyViT(nn.Module):
             x_ = self.token_decoder(x_)                   
 
             # Overlap-add reconstruction
-            # TODO: For some reason this is required for CRPS_SPECTRAL loss to work. Not sure why.
+            # TODO: For some reason this is required for CRPS_SPECTRAL loss to work. Not sure why,
+            # as when overlap == 0 this is not applied.
             x_ = x_.transpose(1, 2)                       
             x_ = x_ * self.window                         
             x_ = self.fold(x_)                          
