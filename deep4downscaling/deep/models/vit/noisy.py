@@ -28,18 +28,18 @@ class NoisyViT(nn.Module):
         spatial resolution of the input.
 
     patch_size : int
-        Size of the patches to extract from the input image.
+        Size of the patches to extract from the input image for building the token embeddings.
         The patch size must be a divisor of the spatial resolution of the input.
 
     dim : int
         Dimension of the token embeddings. This dimensions must be divisible by
         the number of heads.
 
+    num_heads : int
+        Number of attention heads within each transformer block.
+
     depth : int
         Number of transformer encoder blocks.
-
-    num_heads : int
-        Number of attention heads.
 
     mlp_dim : int
         Dimension of the MLP in transformer blocks.
@@ -59,21 +59,17 @@ class NoisyViT(nn.Module):
     orog : torch.Tensor, optional
         Orography data. Must have dimension 2 (height, width) and the same spatial resolution
         as the output data. If provided, the token decoding will be conditioned on the orography
-        patches.
+        patches. When passed it must be already a torch.Tensor located in the same device as the model.
 
     overlap : int, optional
         Overlap between patches. Default is 0. This is used to create a smooth transition
-        between patches, thus avoiding artifacts at the boundaries of the patches.
+        between patches, thus avoiding artifacts at the boundaries of the patches. This issue
+        is especially noticeable when injecting noise, as this noise is injected independently in
+        each patch embedding.
 
     last_relu : bool, optional
-        If set to True, the output of the last linear decoder is passed through a
-        ReLU activation function. By default is set to False.
-
-    Notes
-    -----
-    The model uses a per-token linear decoder at the end that transforms each
-    token embedding into a spatial patch of size (scale * scale + 2 * overlap), which are
-    then reshaped and tiled to form the final high-resolution output.
+        If True, applies ReLU activation to the final output (only applicable when
+        stochastic=False). Default is False. 
     """
 
     def __init__(self, x_shape, y_shape, patch_size, dim, depth, num_heads,
@@ -103,7 +99,7 @@ class NoisyViT(nn.Module):
         self.overlap = overlap
         self.last_relu = last_relu
 
-        # CLN parameters
+        # Noise injection parameters
         self.noise_channels = noise_channels
         self.noise_dim = noise_dim
 
@@ -122,10 +118,10 @@ class NoisyViT(nn.Module):
         if self.scale * self.H_tokens != self.H_out:
             raise ValueError("Output resolution must be divisible by input resolution")
 
-        # Overlapping patch parameters
+        # Overlap-add reconstruction parameters
         self.kernel_size = self.scale + 2 * self.overlap
 
-        # Orography patch embedding: projects (scale * scale) patch to token dimension
+        # Orography patch embedding
         if self.orog is not None:
             self.orography_embedding = nn.Linear(self.scale * self.scale, dim)
 
@@ -146,16 +142,15 @@ class NoisyViT(nn.Module):
             TransformerBlockCLN(dim, num_heads, mlp_dim, noise_dim, dropout)
             for _ in range(depth)
         ])
-
         self.norm = nn.LayerNorm(dim)
 
         # Pre-decoder CNN blocks
         self.cnn_block = CNNBlock(dim)
 
-        # Per-token linear decoder: outputs patches (possibly overlapping)
+        # Per-token linear decoder
         self.token_decoder = nn.Linear(dim, self.scale**2)
 
-        # Folding layer for overlap-add reconstruction
+        # Folding layer
         self.fold = nn.Fold(output_size=(self.H_out, self.W_out),
                             kernel_size=self.kernel_size,
                             padding=self.overlap,
@@ -174,11 +169,12 @@ class NoisyViT(nn.Module):
         self.register_buffer('norm_mask', self.fold(self.window * ones))
 
     def forward(self, x, orography=None):
-        
         B = x.shape[0]
 
+        # Determine if we are in ensemble mode
         is_ensemble_mode = self.training or torch.is_grad_enabled()
 
+        # Set the number of members to iterate over
         if is_ensemble_mode:
             members_to_iterate = self.members_for_training
         else:
@@ -192,19 +188,19 @@ class NoisyViT(nn.Module):
             z = self.noise_embedding(z)
 
             # Patch embedding
-            x_ = self.patch_embedding(x)                 # (B, D, Ht, Wt)
-            x_ = x_.flatten(2).transpose(1, 2)            # (B, N, D)
+            x_ = self.patch_embedding(x)                 
+            x_ = x_.flatten(2).transpose(1, 2)            
 
             # Add positional embeddings
-            x_ = x_ + self.pos_embedding                  # (B, N, D)
-            x_ = self.dropout_emb(x_)                     # (B, N, D)
+            x_ = x_ + self.pos_embedding                  
+            x_ = self.dropout_emb(x_)                     
 
             # Transformer
             for block in self.transformer_blocks:
                 x_ = block(x_, z)
-            x_ = self.norm(x_)                            # (B, N, D)
+            x_ = self.norm(x_)                            
 
-            # Orography conditioning (if provided)
+            # Orography conditioning 
             if self.orog is not None:
                 # Replicate across batch dimension
                 orog = self.orog.repeat(B, 1, 1)
@@ -235,14 +231,14 @@ class NoisyViT(nn.Module):
             x_ = x_.view(B, self.dim, self.num_patches).transpose(1, 2)
 
             # Per-token decoding
-            x_ = self.token_decoder(x_)                   # (B, N, kernel_size**2)
+            x_ = self.token_decoder(x_)                   
 
             # Overlap-add reconstruction
-            # TODO: For some reason this is required for CRPS_SPECTRAL loss to work.
-            x_ = x_.transpose(1, 2)                       # (B, kernel_size**2, N)
-            x_ = x_ * self.window                         # Apply window
-            x_ = self.fold(x_)                          # Fold into spatial grid
-            x_ = x_ / self.norm_mask.clamp(min=1e-8)  # Normalize blended regions
+            # TODO: For some reason this is required for CRPS_SPECTRAL loss to work. Not sure why.
+            x_ = x_.transpose(1, 2)                       
+            x_ = x_ * self.window                         
+            x_ = self.fold(x_)                          
+            x_ = x_ / self.norm_mask.clamp(min=1e-8)  
 
             if self.last_relu:
                 x_ = torch.relu(x_)

@@ -22,7 +22,7 @@ class ViT(nn.Module):
         spatial resolution of the input.
 
     patch_size : int
-        Size of the patches to extract from the input image.
+        Size of the patches to extract from the input image for building the token embeddings.
         The patch size must be a divisor of the spatial resolution of the input.
 
     dim : int
@@ -30,7 +30,7 @@ class ViT(nn.Module):
         the number of heads.
 
     num_heads : int
-        Number of attention heads.
+        Number of attention heads within each transformer block.
 
     depth : int
         Number of transformer encoder blocks.
@@ -44,17 +44,17 @@ class ViT(nn.Module):
     orog : torch.Tensor, optional
         Orography data. Must have dimension 2 (height, width) and the same spatial resolution
         as the output data. If provided, the token decoding will be conditioned on the orography
-        patches.
+        patches. When passed it must be already a torch.Tensor located in the same device as the model.
 
     last_relu : bool, optional
         If True, applies ReLU activation to the final output (only applicable when
         stochastic=False). Default is False. 
 
     stochastic : bool, optional
-        If True, the model outputs both mean and log variance for use with 
-        NLLBerGammaLoss. The output is the concatenation of p, shape and
-        scale. If False, the model outputs only the predicted values.
-        Default is False.
+        If True, the model outputs the parameters of a Bernoulli-gamma
+        distribution for use with the NLLBerGammaLoss. The output is the
+        concatenation of p, log_shape and log_scale. If False, the model
+        outputs the raw values. Default is False.
     """
 
     def __init__(self, x_shape, y_shape, patch_size, dim, depth, num_heads,
@@ -91,7 +91,6 @@ class ViT(nn.Module):
 
         # Upscaling factor
         self.scale = self.H_out // self.H_tokens
-
         if self.scale * self.H_tokens != self.H_out:
             raise ValueError("Output resolution must be divisible by input resolution")
 
@@ -113,14 +112,12 @@ class ViT(nn.Module):
             TransformerBlock(dim, num_heads, mlp_dim, dropout)
             for _ in range(depth)
         ])
-
         self.norm = nn.LayerNorm(dim)
 
         # Pre-decoder CNN blocks
         self.cnn_block = CNNBlock(dim)
 
-        # Per-token linear decoder: outputs patches
-        # For stochastic models (Deep Ensembles), we need two decoders for mean and log_var
+        # Per-token linear decoder
         if self.stochastic:
             self.token_decoder_p = nn.Linear(dim, self.scale**2)
             self.token_decoder_log_shape = nn.Linear(dim, self.scale**2)
@@ -128,23 +125,22 @@ class ViT(nn.Module):
         else:
             self.token_decoder = nn.Linear(dim, self.scale**2)
 
-
     def forward(self, x, orography=None):
         B = x.shape[0]
 
         # Patch embedding
-        x = self.patch_embedding(x)                 # (B, D, Ht, Wt)
-        x = x.flatten(2).transpose(1, 2)            # (B, N, D)
+        x = self.patch_embedding(x)                 
+        x = x.flatten(2).transpose(1, 2)            
 
         # Add positional embeddings
-        x = x + self.pos_embedding                  # (B, N, D)
-        x = self.dropout_emb(x)                     # (B, N, D)
+        x = x + self.pos_embedding                  
+        x = self.dropout_emb(x)                     
 
         # Transformer
-        x = self.transformer_blocks(x)              # (B, N, D)
-        x = self.norm(x)                            # (B, N, D)
+        x = self.transformer_blocks(x)              
+        x = self.norm(x)                            
 
-        # Orography conditioning (if provided)
+        # Orography conditioning 
         if self.orog is not None:
             # Replicate across batch dimension
             orog = self.orog.repeat(B, 1, 1)
@@ -164,7 +160,7 @@ class ViT(nn.Module):
             orog = orog.view(B, self.num_patches, self.scale * self.scale)
             
             # Project orography patches to token dimension
-            orog_features = self.orography_embedding(orog)  # (B, N, D)
+            orog_features = self.orography_embedding(orog) 
             
             # Add orography features to token embeddings
             x = x + orog_features
@@ -177,11 +173,11 @@ class ViT(nn.Module):
         # Per-token decoding
         if self.stochastic:
             
-            p = torch.sigmoid(self.token_decoder_p(x))       # (B, N, kernel_size**2)
-            log_shape = self.token_decoder_log_shape(x) # (B, N, kernel_size**2)
-            log_scale = self.token_decoder_log_scale(x) # (B, N, kernel_size**2)
+            p = torch.sigmoid(self.token_decoder_p(x))       
+            log_shape = self.token_decoder_log_shape(x) 
+            log_scale = self.token_decoder_log_scale(x)
             
-            # Flatten and concatenate
+            # Flatten
             p = p.view(B, -1)
             log_shape = log_shape.view(B, -1)
             log_scale = log_scale.view(B, -1)
@@ -189,11 +185,9 @@ class ViT(nn.Module):
             # Return concatenated parameters
             return torch.cat((p, log_shape, log_scale), dim=1)
         else:
-            # Standard deterministic output
-            x = self.token_decoder(x)               # (B, N, kernel_size**2)
+            x = self.token_decoder(x)               
             
             if self.last_relu:
                 x = torch.relu(x)
             
             return x.view(B, -1)
-

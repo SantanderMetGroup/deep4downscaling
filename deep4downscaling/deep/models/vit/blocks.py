@@ -119,7 +119,7 @@ class TransformerBlockCLN(nn.Module):
         return x
 
 class CNNBlock(nn.Module):
-    """CNN Block. Conv2d, GELU, Conv2d."""
+    """Standard CNN Block. Conv2d, GELU, Conv2d."""
 
     def __init__(self, dim):
         super().__init__()

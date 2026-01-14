@@ -500,8 +500,8 @@ class CRPSLoss(nn.Module):
 
     """
     Fair Continuous Ranked Probability Score (CRPS). It is possible to compute
-    this metric over a target dataset with nans. This is the same as the CRPS,
-    but the second term is divided by 2*M*(M-1) instead of M**2.
+    this metric over a target dataset with nans. This is the same as the standard
+    CRPS, but the second term is divided by 2*M*(M-1) instead of M**2.
 
     Parameters
     ----------
@@ -551,7 +551,7 @@ class CRPSLoss(nn.Module):
                 for j in range(M):
                     second_term += torch.abs(output[i] - output[j]) ** beta
             second_term = second_term / (2*M*(M-1)) # Fair CRPS
-        else: # Just return the first term
+        else:
             second_term = 0.0
 
         # Final loss
@@ -563,9 +563,8 @@ class CRPSSpectralLoss(nn.Module):
 
     """
     Fair Continuous Ranked Probability Score (CRPS). Following Nordhagen et al. (2025),
-    we compute the CRPS both over the field (standard CRPS) and the spectral domain. The
-    spectral CRPS is computed by applying a Fourier transform to the field and then computing
-    the CRPS over the spectral domain.
+    we combine the pointwise and the spectral CRPS. The spectral CRPS is computed by
+    applying a Fourier transform to the field and then computing the CRPS.
 
     Nordhagen, E. M., Haugen, H. H., Salihi, A. F. S., Ingstad, M. S.,
     Nipen, T. N., Seierstad, I. A., ... & Kristiansen, J. (2025).
@@ -576,14 +575,13 @@ class CRPSSpectralLoss(nn.Module):
     ----------
     ignore_nans : bool
         Whether to allow the loss function to ignore nans in the
-        target domain. For now, this only applies for the CRPS over
-        the field, not in the spectral domain.
+        target domain. This only applies to the pointwise CRPS.
 
     H_shape : int
-        Height of the spatial domain.
+        Height of the predictand's spatial domain.
 
     W_shape : int
-        Width of the spatial domain.
+        Width of the predictand's spatial domain.
 
     beta : int
         Power parameter for the absolute differences in the CRPS computation.
@@ -635,7 +633,7 @@ class CRPSSpectralLoss(nn.Module):
                 for j in range(M):
                     second_term += torch.abs(output[i] - output[j]) ** self.beta
             second_term = second_term / (2*M*(M-1)) # Fair CRPS
-        else: # Just return the first term
+        else:
             second_term = 0.0
 
         # Final loss
@@ -654,7 +652,7 @@ class CRPSSpectralLoss(nn.Module):
         else:
             data = [torch.nan_to_num(d, nan=0.0) for d in data]
 
-        B = data[0].shape[0]
+        B = data[0].shape[0] # Batch size
         if data[0].ndim == 3: M = data[0].shape[1] # Number of ensemble members
 
         # Reshape to spatial dimensions
@@ -665,8 +663,6 @@ class CRPSSpectralLoss(nn.Module):
 
         # Compute FFT
         data = [torch.fft.rfft2(member) for member in data]
-
-        # TODO: Filter out high frequencies (Nyquist limit)
 
         return data
         
