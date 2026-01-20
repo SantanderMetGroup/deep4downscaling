@@ -405,7 +405,6 @@ def compute_preds_gaussian(x_data: xr.Dataset, model: torch.nn.Module, device: s
     else:
         data_final = xr.concat(data_pred, dim='member')
 
-    # BUG FIX: Was returning data_pred list instead of data_final
     return data_final
 
 def compute_preds_ber_gamma(x_data: xr.Dataset, model: torch.nn.Module, threshold: float,
@@ -536,4 +535,292 @@ def compute_preds_ber_gamma(x_data: xr.Dataset, model: torch.nn.Module, threshol
     else:
         data_final = xr.concat(data_pred, dim='member')
 
+    return data_final
+
+def compute_preds_mixture_ber_gamma(x_data: xr.Dataset, models: list, threshold: float,
+                                    device: str, var_target: str, mask: xr.Dataset,
+                                    ensemble_size: int=None,
+                                    batch_size: int=None,
+                                    spatial_dims: tuple[str, str]=('lat', 'lon')) -> xr.Dataset:
+
+    """
+    Same as compute_preds_ber_gamma, but for a mixture of Bernoulli-Gamma models.
+    In this case, for sampling from the Deep Ensemble, we select a random model
+    from the ensemble and use it to compute the prediction. This way of sampling
+    is equivalent to sampling from the mixture of Gaussians as defined in
+    Lakshminarayanan et al. (2017)
+
+    Lakshminarayanan, B., Pritzel, A., & Blundell, C. (2017). Simple and scalable
+    predictive uncertainty estimation using deep ensembles. Advances in neural
+    information processing systems, 30.
+
+    Disclaimer
+    ----------
+    The construction of a Bernoulli-Gamma Deep Ensemble is not yet fully tested
+    and should be considered experimental.
+
+    Notes
+    -----
+    For this function the mask is key, as it allows to convert the raw output of
+    the model to the proper xr.Dataset representation.
+
+    The ensemble must be built by training M independent models to minimize the
+    NLL of the Bernoulli-Gamma distribution. For more details, see Lakshminarayanan
+    et al. (2017).
+
+    Parameters
+    ----------
+    x_data : xr.Dataset
+        Predictors to pass as input to the DL model. They must have a spatial
+        (e.g., lat and lon) and temporal dimension.
+
+    models : list[torch.nn.Module]
+        List of Pytorch models forming the ensemble.
+
+    threshold : float
+        The value used as threshold to define the precipitation for fitting the
+        gamma distribution (deep4downscaling.utils.precipitation_NLL_trans). This
+        is required to correct the effect of this transformation in the final
+        prediction.
+
+    device : str
+        Device used to run the inference (cuda or cpu).
+
+    var_target : str
+        Target variable.
+
+    mask : xr.Dataset
+        Mask with no temporal dimension formed by ones/zeros for (spatial)
+        positions to introduce data_pred/np.nans values.
+
+    ensemble_size : int, optional
+        If provided, it indicates the number of samples computed by selecting
+        a random model from the ensemble (note the difference with the
+        ensemble_size parameter in compute_preds_ber_gamma). These are saved
+        as a new dimension in the xr.Dataset (member).
+
+    batch_size : int, optional
+        If provided the predictions are computed in batches of size
+        batch_size. This is useful when facing OOM errors.
+
+    spatial_dims : tuple[str, str], optional
+        Names of the spatial dimensions, defaults to ('lat', 'lon').
+
+    Returns
+    -------
+    xr.Dataset
+        The final prediction
+    """
+
+    if not ensemble_size:
+        ensemble_size = 1
+
+    x_data_arr = trans.xarray_to_numpy(x_data)
+    time_pred = x_data['time'].values
+
+    # Iterate over ensemble members, so each ensemble member is predicted
+    # with a random member of the mixture
+    data_pred = []
+    for _ in range(ensemble_size):
+
+        # Select a random model from the ensemble
+        member = np.random.choice(len(models), size=1)[0]
+        model = models[member]
+
+        data_pred_aux = _predict(model=model, device=device, x_data=x_data_arr,
+                                 batch_size=batch_size)
+
+        # If the model return varios tensors, I assume the first one is the
+        # one containing the predicted parameters (e.g., elevation case)
+        if isinstance(data_pred_aux, types.GeneratorType):
+            data_pred = list(data_pred)[0]
+
+        # Get the parameters of the Bernoulli and gamma dists.
+        dim_target = data_pred_aux.shape[1] // 3
+        p = data_pred_aux[:, :dim_target]
+        shape = np.exp(data_pred_aux[:, dim_target:(dim_target*2)])
+        scale = np.exp(data_pred_aux[:, (dim_target*2):])
+
+        # Free some memory
+        del data_pred_aux; gc.collect()
+
+        # Compute the ocurrence
+        p_random = np.random.uniform(0, 1, p.shape)
+        ocurrence = (p >= p_random) * 1 
+
+        # Free some memory
+        del p_random; gc.collect()
+
+        # Compute the amount
+        amount = np.random.gamma(shape=shape, scale=scale)
+
+        # Correct the amount
+        epsilon = 1e-06
+        threshold = threshold - epsilon
+        amount = amount + threshold
+
+        # Combine ocurrence and amount
+        data_aux = ocurrence * amount
+
+        # Free some memory
+        del ocurrence; del amount
+        gc.collect()
+
+        data_aux = _pred_to_xarray(data_pred=data_aux, time_pred=time_pred,
+                                   var_target=var_target, mask=mask,
+                                   spatial_dims=spatial_dims)
+
+        data_pred.append(data_aux)
+
+    # Free some memory
+    del p; del shape; del scale
+    gc.collect()
+
+    # Return the Dataset
+    if ensemble_size == 1:
+        data_final = data_pred[0]
+    else:
+        data_final = xr.concat(data_pred, dim='member')
+
+    return data_final
+
+def compute_mixture_bergamma(x_data: xr.Dataset, models: list,
+                             device: str, var_target: str,
+                             mask: xr.Dataset=None, template: xr.Dataset=None,
+                             batch_size: int=None,
+                             spatial_dims: tuple[str, str]=('lat', 'lon')) -> xr.Dataset:
+
+    """
+    Unlike in Lakshminarayanan et al. (2017), where a mixture of Gaussians is still
+    Gaussian, a mixture of Bernoulli–Gammas does not reduce to a standard distribution.
+    This function computes the mean and variance of such a mixture, providing a
+    straightforward extension of the Deep Ensemble approach to Bernoulli–Gamma
+    distributions.
+
+    Lakshminarayanan, B., Pritzel, A., & Blundell, C. (2017). Simple and scalable
+    predictive uncertainty estimation using deep ensembles. Advances in neural
+    information processing systems, 30.
+
+    Disclaimer
+    ----------
+    The construction of a Bernoulli-Gamma Deep Ensemble is not yet fully tested
+    and should be considered experimental.
+
+    Notes
+    -----
+    For this function the mask is key, as it allows to convert the raw output of
+    the model to the proper xr.Dataset representation.
+
+    The ensemble must be built by training M independent models to minimize the
+    NLL of the Bernoulli-Gamma distribution. For more details, see Lakshminarayanan
+    et al. (2017).
+
+    Parameters
+    ----------
+    x_data : xr.Dataset
+        Predictors to pass as input to the DL model. They must have a spatial
+        (e.g., lat and lon) and temporal dimension.
+
+    models : list[torch.nn.Module]
+        List of Pytorch models forming the ensemble.
+
+    device : str
+        Device used to run the inference (cuda or cpu).
+
+    var_target : str
+        Target variable.
+
+    mask : xr.Dataset
+        Mask with no temporal dimension formed by ones/zeros for (spatial)
+        positions to introduce data_pred/np.nans values.
+
+    batch_size : int, optional
+        If provided the predictions are computed in batches of size
+        batch_size. This is useful when facing OOM errors.
+
+    spatial_dims : tuple[str, str], optional
+        Names of the spatial dimensions, defaults to ('lat', 'lon').
+
+    Returns
+    -------
+    xr.Dataset
+        The mean and variance of the mixture of Bernoulli-Gamma Deep Ensemble.
+    """
+    
+    x_data_arr = trans.xarray_to_numpy(x_data)
+    
+    # Check for the mask and template
+    if mask and template:
+        raise ValueError('Provide either a mask or a template.')
+    if (not mask) and (not template):
+        raise ValueError('Provide either a mask or` a template, not both.')
+    
+    # Add channel dimension for one-dimensional predictors
+    if len(list(x_data.keys())) <= 1:
+        x_data_arr = x_data_arr[:, None, :, :]
+    
+    time_pred = x_data['time'].values
+    
+    # Collect predictions from all ensemble members
+    ensemble_p = []
+    ensemble_shape = []
+    ensemble_scale = []
+    
+    for model in models:
+        # Get raw predictions (mean and log_var concatenated)
+        data_pred = _predict(model=model, device=device, x_data=x_data_arr,
+                             batch_size=batch_size)
+        
+        # Split into mean and log_var
+        dim_target = int(data_pred.shape[1] / 3)
+        p = data_pred[:, :dim_target]
+        shape = np.exp(data_pred[:, dim_target:(dim_target*2)])
+        scale = np.exp(data_pred[:, (dim_target*2):])
+        
+        ensemble_p.append(p)
+        ensemble_shape.append(shape)
+        ensemble_scale.append(scale)
+
+    # Convert to numpy arrays for easier computation
+    ensemble_p = np.array(ensemble_p) # p
+    ensemble_shape = np.array(ensemble_shape) # alpha
+    ensemble_scale = np.array(ensemble_scale) # beta
+
+    # Get the number of models in the ensemble
+    M = len(models)
+
+    # Compute ensemble mean
+    ensemble_mean = np.mean(ensemble_p * (ensemble_shape * ensemble_scale),
+                            axis=0) 
+    
+    # Compute ensemble variance 
+    ensemble_variance_term1 =  (ensemble_p * ensemble_shape * (ensemble_scale**2)) + \
+                                ensemble_p * (1-ensemble_p)*((ensemble_shape * ensemble_scale)**2)
+    ensemble_variance_term1 = np.mean(ensemble_variance_term1, axis=0)
+                                
+    ensemble_variance_term2 = (ensemble_p * ensemble_shape * ensemble_scale)**2
+    ensemble_variance_term2 = np.mean(ensemble_variance_term2, axis=0)
+
+    ensemble_variance_term3 = ensemble_mean**2
+
+    ensemble_variance = ensemble_variance_term1 + ensemble_variance_term2 - ensemble_variance_term3
+    
+    # Convert to xr.Dataset
+    if mask:
+        pred_mean = _pred_to_xarray(data_pred=ensemble_mean, time_pred=time_pred,
+                                    var_target=var_target, mask=mask,
+                                    spatial_dims=spatial_dims)
+        pred_var = _pred_to_xarray(data_pred=ensemble_variance, time_pred=time_pred,
+                                   var_target=var_target, mask=mask,
+                                   spatial_dims=spatial_dims)
+    elif template:
+        pred_mean = _pred_stations_to_xarray(data_pred=ensemble_mean, time_pred=time_pred,
+                                            var_target=var_target, template=template)
+        pred_var = _pred_stations_to_xarray(data_pred=ensemble_variance, time_pred=time_pred,
+                                            var_target=var_target, template=template)
+    
+    # Combine mean and variance into a single dataset
+    pred_var = pred_var.rename_vars({var_target: var_target + '_var'})
+    data_final = xr.merge([pred_mean, pred_var])
+    
     return data_final
