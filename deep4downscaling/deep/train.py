@@ -20,7 +20,8 @@ def standard_training_loop(model: torch.nn.Module, model_name: str, model_path: 
                            valid_data: torch.utils.data.dataloader.DataLoader=None,
                            scheduler: torch.optim=None,
                            patience_early_stopping: int=None,
-                           mixed_precision: bool=False) -> dict:
+                           mixed_precision: bool=False,
+                           clip_gradients_norm: float=None) -> dict:
     
     """
     Standard training loop for a DL model in a supervised setting. Besides the
@@ -76,6 +77,10 @@ def standard_training_loop(model: torch.nn.Module, model_name: str, model_path: 
         mixed precision training to reduce computation and memory
         footprint. By default this parameter is set to False.
 
+    clip_gradients_norm : float, optional
+        Maximum norm of the gradients. If provided, the gradients are clipped
+        to avoid exploding gradients.
+
     Returns
     -------
     dict
@@ -119,12 +124,17 @@ def standard_training_loop(model: torch.nn.Module, model_name: str, model_path: 
                     output = model(x)
                     loss = loss_function(target=y, output=output)
                 scaler.scale(loss).backward()
+                if clip_gradients_norm is not None:
+                    scaler.unscale_(optimizer)
+                    torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=clip_gradients_norm)
                 scaler.step(optimizer)
                 scaler.update()
             else:
                 output = model(x)
                 loss = loss_function(target=y, output=output)
                 loss.backward()               
+                if clip_gradients_norm is not None:
+                    torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=clip_gradients_norm)
                 optimizer.step()
 
             epoch_train_loss[-1] += loss.item()
@@ -205,6 +215,287 @@ def standard_training_loop(model: torch.nn.Module, model_name: str, model_path: 
         # Print log
         print(log_msg)
 
+    # Return loss functions
+    if valid_data is not None:
+        return epoch_train_loss, epoch_valid_loss
+    else:
+        return epoch_train_loss, None
+
+def adversarial_training_loop(model: torch.nn.Module, model_name: str, model_path: str,
+                               loss_function: torch.nn.Module, optimizer: torch.optim,
+                               num_epochs: int, device: str,
+                               train_data: torch.utils.data.dataloader.DataLoader,
+                               valid_data: torch.utils.data.dataloader.DataLoader=None,
+                               scheduler: torch.optim=None,
+                               patience_early_stopping: int=None,
+                               mixed_precision: bool=False,
+                               epsilon: float=0.01) -> dict:
+    
+    """
+    Adversarial training loop for Deep Ensembles using FGSM (Fast Gradient Sign Method).
+    This implementation follows Lakshminarayanan et al. (2017) where adversarial training
+    is used to smooth predictive distributions. For each training batch, an adversarial
+    example is generated using FGSM and the model is trained to minimize the sum of losses
+    on both the original and adversarial examples.
+    
+    The adversarial perturbation is computed as:
+        x_adv = x + epsilon * sign(∇_x L(θ, x, y))
+    
+    The optimization objective is:
+        Minimize L(θ, x, y) + L(θ, x_adv, y) w.r.t. θ
+    
+    where L is the loss function, θ are the model parameters, and epsilon controls
+    the perturbation magnitude (default 1% of the input range).
+    
+    Parameters
+    ----------
+    model : torch.nn.Module
+        Pytorch model to train
+    
+    model_name : str
+        Name of the model when saved as
+        a .pt file
+    
+    model_path : str
+        Path of the folder where the model
+        will be saved
+    
+    loss_function : torch.nn.Module
+        Loss function to use when training/evaluating
+        the model
+    
+    optimizer : torch.optim
+        Optimizer to use when training the model
+    
+    num_epochs : int
+        Number of epochs
+    
+    device : str
+        Device used to run the training (cuda or cpu)
+    
+    train_data : torch.utils.data.dataloader.DataLoader
+        DataLoader with the training data
+    
+    valid_data : torch.utils.data.dataloader.DataLoader, optional
+        DataLoader with the validation data
+    
+    scheduler : torch.optim, optional
+        Scheduler to use for the optimization
+    
+    patience_early_stopping : int, optional
+        Number of steps allowed for the model to run before
+        any improvement in the loss function occurs. If this
+        number is surpassed without improvement the training is
+        stopped.
+    
+    mixed_precision : bool, optional
+        If training on GPUs, mixed_precision allows for automatic
+        mixed precision training to reduce computation and memory
+        footprint. By default this parameter is set to False.
+    
+    epsilon : float, optional
+        Magnitude of adversarial perturbation. Following the Deep Ensembles
+        paper, the default is 1% of the input range (0.01). This value assumes
+        standardized inputs.
+    
+    Returns
+    -------
+    dict
+        Dictionary with list(s) representing the loss function
+        across epochs.
+    
+    References
+    ----------
+    Lakshminarayanan, B., Pritzel, A., & Blundell, C. (2017). Simple and scalable
+    predictive uncertainty estimation using deep ensembles. In Advances in neural
+    information processing systems (pp. 6402-6413).
+    """
+    
+    model = model.to(device)
+    
+    # The scaler scales the loss to avoid the underflow
+    # of gradients
+    if mixed_precision:
+        scaler = torch.amp.GradScaler()
+    
+    # Set the early stopping parameters
+    if patience_early_stopping is not None:
+        best_val_loss = math.inf
+        early_stopping_step = 0
+    
+    # Register the losses per epoch
+    epoch_train_loss = []
+    epoch_valid_loss = []
+    
+    # Iterate over epochs
+    for epoch in range(num_epochs):
+        
+        epoch_start = time.time()
+        epoch_train_loss.append(0)
+        
+        # Iterate over batches
+        model.train()
+        for x, y in train_data:
+            
+            x = x.to(device)
+            y = y.to(device)
+            
+            # Enable gradients w.r.t. input for adversarial example generation
+            x.requires_grad = True
+            
+            optimizer.zero_grad()
+            
+            if mixed_precision:
+                with torch.amp.autocast(device_type=device):
+                    # Forward pass on original data to get gradients for FGSM
+                    output = model(x)
+                    loss = loss_function(target=y, output=output)
+                
+                # Compute gradients w.r.t. input for FGSM
+                scaler.scale(loss).backward()
+                
+                # Generate adversarial example using FGSM
+                with torch.no_grad():
+                    # Get sign of gradient
+                    grad_sign = x.grad.sign()
+                    # Create adversarial example
+                    x_adv = x + epsilon * grad_sign
+                    x_adv = x_adv.detach()
+                    x_adv.requires_grad = False
+                
+                # Zero gradients before computing total loss (sum of both losses)
+                optimizer.zero_grad()
+                
+                # Forward pass on both original and adversarial examples
+                with torch.amp.autocast(device_type=device):
+                    output = model(x)
+                    loss = loss_function(target=y, output=output)
+                    
+                    output_adv = model(x_adv)
+                    loss_adv = loss_function(target=y, output=output_adv)
+                    
+                    # Total loss: sum of original and adversarial losses
+                    # Following Algorithm 1: Minimize ℓ(θ_m, x_n_m, y_n_m) + ℓ(θ_m, x'_n_m, y_n_m)
+                    total_loss = loss + loss_adv
+                
+                # Backward pass and optimization step on total loss
+                scaler.scale(total_loss).backward()
+                scaler.step(optimizer)
+                scaler.update()
+                
+            else:
+                # Forward pass on original data to get gradients for FGSM
+                output = model(x)
+                loss = loss_function(target=y, output=output)
+                
+                # Compute gradients w.r.t. input for FGSM
+                loss.backward()
+                
+                # Generate adversarial example using FGSM
+                with torch.no_grad():
+                    # Get sign of gradient
+                    grad_sign = x.grad.sign()
+                    # Create adversarial example
+                    x_adv = x + epsilon * grad_sign
+                    x_adv = x_adv.detach()
+                    x_adv.requires_grad = False
+                
+                # Zero gradients before computing total loss (sum of both losses)
+                optimizer.zero_grad()
+                
+                # Forward pass on both original and adversarial examples
+                output = model(x)
+                loss = loss_function(target=y, output=output)
+                
+                output_adv = model(x_adv)
+                loss_adv = loss_function(target=y, output=output_adv)
+                
+                # Total loss: sum of original and adversarial losses
+                total_loss = loss + loss_adv
+                
+                # Backward pass and optimization step on total loss
+                total_loss.backward()
+                optimizer.step()
+            
+            # Accumulate total loss for tracking
+            epoch_train_loss[-1] += total_loss.item()
+        
+        # Compute mean loss across the epoch
+        epoch_train_loss[-1] = epoch_train_loss[-1] / len(train_data)
+        
+        # If valid data is provided, perform a pass through it
+        if valid_data is not None:
+            
+            epoch_valid_loss.append(0)
+            
+            model.eval()
+            for x, y in valid_data:
+                
+                x = x.to(device)
+                y = y.to(device)
+                
+                if mixed_precision:
+                    with torch.amp.autocast(device_type=device):
+                        output = model(x)
+                        loss = loss_function(target=y, output=output)
+                else:
+                    output = model(x)
+                    loss = loss_function(target=y, output=output)
+                
+                epoch_valid_loss[-1] += loss.item()
+            
+            # Compute mean loss across the epoch
+            epoch_valid_loss[-1] = epoch_valid_loss[-1] / len(valid_data)
+        
+        epoch_end = time.time()
+        epoch_time = np.round(epoch_end - epoch_start, 2)
+        
+        # Build log message
+        log_msg = f'Epoch {epoch+1} ({epoch_time} secs) | Training Loss {np.round(epoch_train_loss[-1], 4)}'
+        if valid_data is not None:
+            log_msg = log_msg + f' Valid Loss {np.round(epoch_valid_loss[-1], 4)}'
+        
+        # Step the scheduler if provided
+        if scheduler is not None:
+            # If scheduler is ReduceLROnPlateau, it needs the validation loss
+            if isinstance(scheduler, torch.optim.lr_scheduler.ReduceLROnPlateau):
+                if valid_data is not None:
+                    scheduler.step(epoch_valid_loss[-1])
+                else:
+                    scheduler.step(epoch_train_loss[-1])
+            else:
+                scheduler.step()
+            
+            # Add current learning rate to log message
+            current_lr = scheduler.get_last_lr()[0] if not isinstance(scheduler, torch.optim.lr_scheduler.ReduceLROnPlateau) else optimizer.param_groups[0]['lr']
+            log_msg = log_msg + f' | LR {current_lr:.2e}'
+        
+        # Early stopping logic
+        if patience_early_stopping is not None:
+            # Save the model if the validation loss improves
+            if epoch_valid_loss[-1] < best_val_loss:
+                best_val_loss = epoch_valid_loss[-1]
+                early_stopping_step = 0
+                log_msg = log_msg + ' (Model saved)'
+                torch.save(model.state_dict(),
+                           os.path.expanduser(f'{model_path}/{model_name}.pt'))
+            else:
+                early_stopping_step +=1
+            
+            # If no improvement over the specified steps, stop the training
+            if early_stopping_step >= patience_early_stopping:
+                print(log_msg)
+                print('***Training finished***')
+                break
+        
+        else: # If early stopping is not configured save the model at each epoch
+            log_msg = log_msg + ' (Model saved)'
+            torch.save(model.state_dict(),
+                       os.path.expanduser(f'{model_path}/{model_name}.pt'))
+        
+        # Print log
+        print(log_msg)
+    
     # Return loss functions
     if valid_data is not None:
         return epoch_train_loss, epoch_valid_loss
