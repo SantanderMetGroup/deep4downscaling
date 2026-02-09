@@ -47,18 +47,11 @@ class ViT(nn.Module):
         patches. When passed it must be already a torch.Tensor located in the same device as the model.
 
     last_relu : bool, optional
-        If True, applies ReLU activation to the final output (only applicable when
-        stochastic=False). Default is False. 
-
-    stochastic : bool, optional
-        If True, the model outputs the parameters of a Bernoulli-gamma
-        distribution for use with the NLLBerGammaLoss. The output is the
-        concatenation of p, log_shape and log_scale. If False, the model
-        outputs the raw values. Default is False.
+        If True, applies ReLU activation to the final output.
     """
 
     def __init__(self, x_shape, y_shape, patch_size, dim, depth, num_heads,
-                 mlp_dim, dropout=0., orog=None, last_relu=False, stochastic=False):
+                 mlp_dim, dropout=0., orog=None, last_relu=False):
         super(ViT, self).__init__()
 
         if (len(x_shape) != 4) or (len(y_shape) != 2):
@@ -78,7 +71,6 @@ class ViT(nn.Module):
         self.dropout = dropout
         self.orog = orog
         self.last_relu = last_relu
-        self.stochastic = stochastic
         
         # Coarse grid size (number of tokens in each dimension)
         self.H_tokens = x_shape[2] // patch_size
@@ -118,12 +110,7 @@ class ViT(nn.Module):
         self.cnn_block = CNNBlock(dim)
 
         # Per-token linear decoder
-        if self.stochastic:
-            self.token_decoder_p = nn.Linear(dim, self.scale**2)
-            self.token_decoder_log_shape = nn.Linear(dim, self.scale**2)
-            self.token_decoder_log_scale = nn.Linear(dim, self.scale**2)
-        else:
-            self.token_decoder = nn.Linear(dim, self.scale**2)
+        self.token_decoder = nn.Linear(dim, self.scale**2)
 
     def forward(self, x, orography=None):
         B = x.shape[0]
@@ -171,23 +158,9 @@ class ViT(nn.Module):
         x = x.view(B, self.dim, self.num_patches).transpose(1, 2)
 
         # Per-token decoding
-        if self.stochastic:
+        x = self.token_decoder(x)               
             
-            p = torch.sigmoid(self.token_decoder_p(x))       
-            log_shape = self.token_decoder_log_shape(x) 
-            log_scale = self.token_decoder_log_scale(x)
-            
-            # Flatten
-            p = p.view(B, -1)
-            log_shape = log_shape.view(B, -1)
-            log_scale = log_scale.view(B, -1)
-            
-            # Return concatenated parameters
-            return torch.cat((p, log_shape, log_scale), dim=1)
-        else:
-            x = self.token_decoder(x)               
-            
-            if self.last_relu:
-                x = torch.relu(x)
-            
-            return x.view(B, -1)
+        if self.last_relu:
+            x = torch.relu(x)
+        
+        return x.view(B, -1)
