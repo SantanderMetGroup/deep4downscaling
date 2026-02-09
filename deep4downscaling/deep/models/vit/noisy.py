@@ -1,3 +1,18 @@
+"""
+This module contains the Noisy Vision Transformer (NoisyViT) model for statistical downscaling.
+
+The model injects noise into the encoder to generate stochastic outputs following the
+implementation in Lang et al. (2024).
+
+Lang, S., Alexe, M., Clare, M. C., Roberts, C., Adewoyin, R., Bouallègue, Z. B., ... & Leutbecher, M. (2024).
+AIFS-CRPS: ensemble forecasting using a model trained with a loss function based on the continuous ranked
+probability score. arXiv preprint arXiv:2412.15832.
+
+Authors:
+    Jose González-Abad
+    Carlota García Fernández
+""" 
+
 import torch
 import torch.nn as nn
 import math

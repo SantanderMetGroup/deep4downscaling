@@ -1,3 +1,11 @@
+"""
+This module contains the Vision Transformer (ViT) model for statistical downscaling.
+
+Authors:
+    Jose González-Abad
+    Carlota García Fernández
+""" 
+
 import torch
 import torch.nn as nn
 import math

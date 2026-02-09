@@ -20,7 +20,8 @@ def standard_training_loop(model: torch.nn.Module, model_name: str, model_path: 
                            valid_data: torch.utils.data.dataloader.DataLoader=None,
                            scheduler: torch.optim=None,
                            patience_early_stopping: int=None,
-                           mixed_precision: bool=False) -> dict:
+                           mixed_precision: bool=False,
+                           clip_gradients_norm: float=None) -> dict:
     
     """
     Standard training loop for a DL model in a supervised setting. Besides the
@@ -76,6 +77,10 @@ def standard_training_loop(model: torch.nn.Module, model_name: str, model_path: 
         mixed precision training to reduce computation and memory
         footprint. By default this parameter is set to False.
 
+    clip_gradients_norm : float, optional
+        Maximum norm of the gradients. If provided, the gradients are clipped
+        to avoid exploding gradients.
+
     Returns
     -------
     dict
@@ -119,12 +124,17 @@ def standard_training_loop(model: torch.nn.Module, model_name: str, model_path: 
                     output = model(x)
                     loss = loss_function(target=y, output=output)
                 scaler.scale(loss).backward()
+                if clip_gradients_norm is not None:
+                    scaler.unscale_(optimizer)
+                    torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=clip_gradients_norm)
                 scaler.step(optimizer)
                 scaler.update()
             else:
                 output = model(x)
                 loss = loss_function(target=y, output=output)
                 loss.backward()               
+                if clip_gradients_norm is not None:
+                    torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=clip_gradients_norm)
                 optimizer.step()
 
             epoch_train_loss[-1] += loss.item()

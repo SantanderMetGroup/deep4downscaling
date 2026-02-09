@@ -1,3 +1,11 @@
+"""
+This module contains the building blocks for the Vision Transformer (ViT) and Noisy Vision Transformer (NoisyViT) models.
+
+Authors:
+    Jose González-Abad
+    Carlota García Fernández
+""" 
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
