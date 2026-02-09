@@ -242,8 +242,6 @@ class NoisyViT(nn.Module):
             x_ = self.token_decoder(x_)                   
 
             # Overlap-add reconstruction
-            # TODO: For some reason this is required for CRPS_SPECTRAL loss to work. Not sure why,
-            # as when overlap == 0 this is not applied.
             x_ = x_.transpose(1, 2)                       
             x_ = x_ * self.window                         
             x_ = self.fold(x_)                          
