@@ -171,7 +171,7 @@ class NoisyViT(nn.Module):
         self.cnn_block = CNNBlock(dim)
 
         # Per-token linear decoder
-        self.token_decoder = nn.Linear(dim, self.scale**2)
+        self.token_decoder = nn.Linear(dim, self.kernel_size**2)
 
         # Folding layer
         self.fold = nn.Fold(output_size=(self.H_out, self.W_out),
@@ -185,7 +185,7 @@ class NoisyViT(nn.Module):
             window = window.unsqueeze(0) * window.unsqueeze(1)
             self.register_buffer('window', window.view(-1, 1))
         else:
-            self.register_buffer('window', torch.ones(self.scale**2, 1))
+            self.register_buffer('window', torch.ones(self.kernel_size**2, 1))
 
         # Pre-compute normalization mask to handle overlapping regions
         ones = torch.ones(1, 1, self.num_patches)
