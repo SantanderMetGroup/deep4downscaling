@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+
 """
 Asymmetric loss function for daily precipitation.
 

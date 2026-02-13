@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+
 """
 This module contains the DeepESD discriminator (cGAN) for statistical downscaling.
 

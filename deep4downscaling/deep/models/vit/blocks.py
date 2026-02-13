@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+
 """
 This module contains the building blocks for the Vision Transformer (ViT) and Noisy Vision Transformer (NoisyViT) models.
 
