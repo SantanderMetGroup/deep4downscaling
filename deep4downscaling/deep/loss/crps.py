@@ -106,6 +106,12 @@ class CRPSSpectralLoss(nn.Module):
     lambda_spectral : float
         Weight for the spectral CRPS.
 
+    spatial_resolution : float, optional
+        Spatial resolution of the predictand grid in km. When provided, a
+        low-pass filter is applied in the spectral CRPS branch to remove
+        frequencies beyond the Nyquist limit k_N = 2*pi/(2*spatial_resolution).
+        If None, no spectral filtering is applied.
+
     target : torch.Tensor
         Target/ground-truth data
 
@@ -118,13 +124,17 @@ class CRPSSpectralLoss(nn.Module):
     def __init__(self, ignore_nans: bool,
                  H_shape: int, W_shape: int, 
                  beta: int = 1,
-                 lambda_spectral: float = 0.1) -> None:
+                 lambda_spectral: float = 0.1,
+                 spatial_resolution: float = None) -> None:
         super(CRPSSpectralLoss, self).__init__()
         self.ignore_nans = ignore_nans
         self.H_shape = H_shape
         self.W_shape = W_shape
         self.beta = beta
         self.lambda_spectral = lambda_spectral
+        if spatial_resolution is not None and spatial_resolution <= 0:
+            raise ValueError("spatial_resolution must be > 0 when provided.")
+        self.spatial_resolution = spatial_resolution
         self.filter_nans = False # Control whether to filter out nans in _CRPS_pointwise
 
     def _CRPS_pointwise(self, target: torch.Tensor, output) -> torch.Tensor:
@@ -180,6 +190,16 @@ class CRPSSpectralLoss(nn.Module):
 
         # Compute FFT
         data = [torch.fft.rfft2(member) for member in data]
+
+        # Optionally remove frequencies beyond the Nyquist limit
+        if self.spatial_resolution is not None:
+            k_nyquist = 2.0 * torch.pi / (2.0 * self.spatial_resolution)
+            kx = 2.0 * torch.pi * torch.fft.rfftfreq(self.W_shape, d=self.spatial_resolution)
+            ky = 2.0 * torch.pi * torch.fft.fftfreq(self.H_shape, d=self.spatial_resolution)
+            k_radius = torch.sqrt(ky[:, None] ** 2 + kx[None, :] ** 2)
+            low_pass_mask = k_radius <= k_nyquist
+            low_pass_mask = low_pass_mask.to(device=data[0].device)
+            data = [member * low_pass_mask for member in data]
 
         return data
         
