@@ -1,0 +1,42 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "deep4downscaling"
+version = "1.2.0"
+description = "A Python library for developing deep learning models for statistical downscaling."
+readme = "README.md"
+authors = [{ name = "Santander MetGroup" }]
+license = { text = "GPL-3.0" }
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: GNU General Public License v3 (GPLv3)",
+    "Operating System :: OS Independent",
+]
+dependencies = [
+    "numpy",
+    "pandas",
+    "xarray",
+    "netCDF4",
+    "torch",
+    "torchvision",
+    "torchaudio",
+    "matplotlib",
+    "cartopy",
+    "scikit-learn",
+    "scipy",
+    "dask",
+    "pyyaml",
+    "tqdm",
+    "captum",
+    "xskillscore",
+    "properscoring",
+    "shapely",
+    "bokeh",
+    "bottleneck"
+]
+
+[tool.setuptools]
+packages = ["deep4downscaling"]
+

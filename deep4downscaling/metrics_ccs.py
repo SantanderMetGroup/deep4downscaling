@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+
 """
 This module contains the function compute_ccs, which computes the Climate Change
 Signal (CCs) between the future and historical data (future - historical) after

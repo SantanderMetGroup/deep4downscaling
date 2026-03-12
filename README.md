@@ -74,11 +74,18 @@ git clone https://github.com/SantanderMetGroup/deep4downscaling/
 cd deep4downscaling
 ```
 
-### 2. Create a conda environment from the provided .yml
+### 2. Install the library
+It is recommended to use a virtual environment or a conda environment. Once your environment is active, you can install the library and its dependencies using `pip`:
+
 ```bash
-conda env create -f requirements/deep4downscaling-gpu.yml
+pip install .
 ```
-If you prefer a CPU-only setup, use the `requirements/deep4downscaling-cpu.yml` file instead.
+
+For development purposes, you can install the library in editable mode:
+
+```bash
+pip install -e .
+```
 
 ## Usage
 
