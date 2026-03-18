@@ -7,106 +7,115 @@ Authors:
     Jose González-Abad
 """
 
-import math
-
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
 
-class FourierPositionalEncoding(nn.Module):
+class MultiHeadCrossAttention(nn.Module):
     """
-    Fourier positional encoding for 2D spatial coordinates (lat, lon).
+    Multi-head cross-attention supporting different query and key/value dimensions.
 
-    Maps normalized (lat, lon) coordinates to a high-dimensional vector using
-    log-spaced sinusoidal features followed by a learned linear projection. The
-    multi-scale sinusoidal basis lets the model distinguish fine spatial differences
-    (high frequencies) while still capturing large-scale structure (low frequencies).
-
-    Based on Tancik et al. (2020) "Fourier Features Let Networks Learn High Frequency
-    Functions in Low Dimensional Domains".
+    The Q projection maps from query_dim to kv_dim, so input queries can have a
+    smaller dimension than the encoder tokens. Attention is computed in kv_dim space,
+    and the output is also kv_dim-dimensional. This precludes using PyTorch's built-in
+    nn.MultiheadAttention, which always outputs at the query input dimension.
 
     Parameters
     ----------
-    num_frequencies : int
-        Number of log-spaced frequencies for the sinusoidal encoding.
+    query_dim : int
+        Dimension of the query input.
 
-    dim : int
-        Output embedding dimension.
+    kv_dim : int
+        Dimension of the key/value input (encoder tokens). Must be divisible by
+        num_heads.
 
-    max_log_freq : float, optional
-        Maximum log10 frequency. Frequencies are spaced from 10^0 to 10^max_log_freq.
-        Default is 4.0.
+    num_heads : int
+        Number of attention heads.
+
+    dropout : float, optional
+        Dropout probability on attention weights. Default is 0.0.
     """
 
-    def __init__(self, num_frequencies, dim, max_log_freq=4.):
+    def __init__(self, query_dim, kv_dim, num_heads, dropout=0.):
         super().__init__()
-        # Fixed log-spaced frequencies (not learnable)
-        # Using a smaller max_log_freq to prevent high-frequency "checkerboard" artifacts
-        # commonly seen in implicitly neural representations and Fourier features
-        max_log_freq = min(max_log_freq, 2.0)  # Capped at 2.0
-        self.register_buffer('freqs', torch.logspace(0, max_log_freq, num_frequencies))
-        # Learned projection: (2 coords) * (num_frequencies) * (sin + cos) → dim
-        self.proj = nn.Linear(2 * num_frequencies * 2, dim)
+        assert kv_dim % num_heads == 0, 'kv_dim must be divisible by num_heads'
 
-    def forward(self, coords):
-        # coords: (N, 2) — normalized lat/lon in [0, 1]
-        x = coords.unsqueeze(-1) * self.freqs           # (N, 2, F)
-        x = torch.cat([torch.sin(x), torch.cos(x)], -1) # (N, 2, 2F)
-        x = x.flatten(1)                                 # (N, 4F)
-        return self.proj(x)                              # (N, dim)
+        self.num_heads = num_heads
+        self.head_dim = kv_dim // num_heads
+
+        self.q_proj = nn.Linear(query_dim, kv_dim)
+        self.k_proj = nn.Linear(kv_dim, kv_dim)
+        self.v_proj = nn.Linear(kv_dim, kv_dim)
+        self.out_proj = nn.Linear(kv_dim, kv_dim)
+        self.dropout = nn.Dropout(dropout)
+
+    def forward(self, q, k, v):
+        B, N_q, _ = q.shape
+
+        q = self.q_proj(q).reshape(B, N_q, self.num_heads, self.head_dim).permute(0, 2, 1, 3)
+        k = self.k_proj(k).reshape(B, -1, self.num_heads, self.head_dim).permute(0, 2, 1, 3)
+        v = self.v_proj(v).reshape(B, -1, self.num_heads, self.head_dim).permute(0, 2, 1, 3)
+
+        scale = self.head_dim ** -0.5
+        attn = (q @ k.transpose(-2, -1)) * scale
+        attn = F.softmax(attn, dim=-1)
+        attn = self.dropout(attn)
+
+        out = (attn @ v).transpose(1, 2).contiguous().reshape(B, N_q, -1)
+        return self.out_proj(out)
 
 
 class CrossAttentionDecoderBlock(nn.Module):
     """
-    Cross-attention decoder block.
+    Cross-attention decoder block (Perceiver IO style).
 
-    Each block has two sub-layers (all with pre-norm and residual connections):
-      1. Cross-attention: output queries attend to encoder tokens (Q=queries, K/V=encoder).
-      2. MLP: non-linear transformation of the gathered features.
+    Cross-attention sub-layer followed by a feedforward MLP sub-layer, both with
+    pre-norm. The cross-attention uses a residual connection only when query_dim ==
+    kv_dim (subsequent decoder blocks); when query_dim != kv_dim (first block), the
+    dimension change makes a direct residual impossible. The MLP always operates in
+    kv_dim space and always uses a residual connection.
 
     Parameters
     ----------
-    dim : int
-        Embedding dimension.
+    query_dim : int
+        Dimension of the input queries.
+
+    kv_dim : int
+        Dimension of the key/value input (encoder tokens).
 
     num_heads : int
         Number of attention heads.
 
     mlp_dim : int
-        Hidden dimension of the MLP.
+        Hidden dimension of the feedforward MLP.
 
     dropout : float, optional
         Dropout probability. Default is 0.0.
     """
 
-    def __init__(self, dim, num_heads, mlp_dim, dropout=0.):
+    def __init__(self, query_dim, kv_dim, num_heads, mlp_dim, dropout=0.):
         super().__init__()
 
-        # Cross-attention: Q from queries, K/V from encoder tokens
-        self.cross_attn_norm_q = nn.LayerNorm(dim)
-        self.cross_attn_norm_kv = nn.LayerNorm(dim)
-        self.cross_attention = nn.MultiheadAttention(dim, num_heads,
-                                                     dropout=dropout, batch_first=True)
+        self.has_residual = (query_dim == kv_dim)
 
-        # MLP
-        self.mlp = nn.Sequential(nn.LayerNorm(dim),
-                                 nn.Linear(dim, mlp_dim),
+        self.cross_attn_norm_q = nn.LayerNorm(query_dim)
+        self.cross_attn_norm_kv = nn.LayerNorm(kv_dim)
+        self.cross_attention = MultiHeadCrossAttention(query_dim, kv_dim, num_heads, dropout)
+
+        self.mlp = nn.Sequential(nn.LayerNorm(kv_dim),
+                                 nn.Linear(kv_dim, mlp_dim),
                                  nn.GELU(),
                                  nn.Dropout(dropout),
-                                 nn.Linear(mlp_dim, dim),
+                                 nn.Linear(mlp_dim, kv_dim),
                                  nn.Dropout(dropout))
 
     def forward(self, queries, encoder_tokens):
-        # queries: (B, N_out, dim)
-        # encoder_tokens: (B, N_enc, dim)
-
-        # Cross-attention: each output query gathers information from encoder tokens
         q = self.cross_attn_norm_q(queries)
         kv = self.cross_attn_norm_kv(encoder_tokens)
-        queries = queries + self.cross_attention(q, kv, kv)[0]
+        attn_out = self.cross_attention(q, kv, kv)
 
-        # MLP
-        queries = queries + self.mlp(queries)
+        if self.has_residual:
+            attn_out = queries + attn_out
 
-        return queries
+        return attn_out + self.mlp(attn_out)
