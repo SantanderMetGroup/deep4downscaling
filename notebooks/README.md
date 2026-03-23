@@ -10,6 +10,7 @@ This folder contains example Jupyter notebooks that illustrate typical `deep4dow
 - `downscaling_deepesd_canary_islands.ipynb`: DeepESD example adapted to the Canary Islands domain.
 - `explainability_deepesd.ipynb`: XAI workflow for interpreting DeepESD predictions with `deep4downscaling.deep.xai`.
 - `cordexbench_downscaling_deepesd.ipynb`: Example using the CORDEXBench benchmark dataset.
+- `downscaling_vit.ipynb`: Downscaling precipitation with a stochastic ViT (CRPS)
 
 ## Notes
 
