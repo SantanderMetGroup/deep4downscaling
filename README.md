@@ -26,6 +26,34 @@ In addition to these main goals, `deep4downscaling` includes:
 **Comprehensive Evaluation Metrics**:
 A dedicated collection of evaluation metrics widely recognized in the downscaling community, enabling researchers to thoroughly assess model performance.
 
+| Metric | Description |
+| --- | --- |
+| `bias_mean` | Bias of the mean between the target and predicted datasets. |
+| `bias_tnn` | Bias of the annual minimum of daily minimum temperature (TNn). |
+| `bias_txx` | Bias of the annual maximum of daily maximum temperature (TXx). |
+| `bias_quantile` | Bias of a specified quantile. |
+| `mae` | Mean Absolute Error (MAE). |
+| `rmse` | Root Mean Square Error (RMSE). |
+| `rmse_wet` | RMSE for wet days only. |
+| `rmse_relative` | RMSE relative to the target's standard deviation. |
+| `bias_rel_mean` | Relative bias of the mean. |
+| `bias_rel_quantile` | Relative bias of a specified quantile. |
+| `bias_rel_R01` | Relative bias of the wet-day frequency index (R01). |
+| `bias_rel_dry_days` | Relative bias of the proportion of dry days. |
+| `bias_rel_SDII` | Relative bias of the wet-day intensity index (SDII). |
+| `bias_rel_rx1day` | Relative bias of the maximum 1-day precipitation index (Rx1day). |
+| `ratio_std` | Ratio of standard deviations. |
+| `ratio_interannual_var` | Ratio of interannual variability. |
+| `corr` | Pearson or Spearman correlation, with an option for deseasonalized data. |
+| `joint_quantile_exceedance` | Joint exceedance probability for a given quantile for two variables. |
+| `bias_joint_quantile_exceedance` | Bias in the joint quantile exceedance probability. |
+| `diurnal_temp_range` | Diurnal temperature range (DTR). |
+| `bias_diurnal_temp_range` | Bias in the diurnal temperature range. |
+| `corr_compound` | Pearson or Spearman correlation between two different variables. |
+| `bias_corr_compound` | Bias in the correlation between two different variables. |
+| `crps_ensemble` | Continuous Ranked Probability Score (CRPS) for an ensemble forecast. |
+| `normalized_rank` | Normalized Rank for an ensemble forecast. |
+
 **eXplainable Artificial Intelligence (XAI) Techniques Tailored for Downscaling**:
 XAI techniques adapted for statistical downscaling models. This ensures that generated projections are transparent and trustworthy—a critical feature for decision-makers and other end-users who rely on climate modeling outputs.
 
@@ -46,11 +74,18 @@ git clone https://github.com/SantanderMetGroup/deep4downscaling/
 cd deep4downscaling
 ```
 
-### 2. Create a conda environment from the provided .yml
+### 2. Install the library
+It is recommended to use a virtual environment or a conda environment. Once your environment is active, you can install the library and its dependencies using `pip`:
+
 ```bash
-conda env create -f requirements/deep4downscaling-gpu.yml
+pip install .
 ```
-If you prefer a CPU-only setup, use the `requirements/deep4downscaling-cpu.yml` file instead.
+
+For development purposes, you can install the library in editable mode:
+
+```bash
+pip install -e .
+```
 
 ## Usage
 
@@ -74,15 +109,83 @@ Should you have any questions or need clarifications, feel free to open an issue
 
 ## Contributing
 
-We welcome contributions of all kinds to `deep4downscaling`—from reporting bugs and suggesting improvements to submitting pull requests for new features or fixes. Here’s how you can get involved:
+We use two main branches:
 
-1. **Report Bugs:**  
-   If you find an issue, please [open a new GitHub issue](https://github.com/SantanderMetGroup/deep4downscaling/issues) with details on how to reproduce it.
+- `main`: stable, release-ready code (default branch when cloning).
+- `devel`: active development / integration branch.
 
-2. **Suggest Enhancements or New Features:**  
-   We value user feedback! Feel free to create an issue describing your idea or improvement.
+All pull requests must target `devel`. Direct pushes to `main` and `devel` are restricted to the maintainers. Maintainers periodically merge `devel` into `main` and create new tagged releases from `main`.
 
-3. **Submit Pull Requests:**  
-   - Fork the repository and create a new branch for your changes.  
-   - Make your changes or add your new feature.  
-   - Open a pull request (PR) to the main branch of `deep4downscaling`.   
+---
+
+### For collaborators (with write access)
+
+1. Clone the repository:
+
+   ```bash
+   git clone https://github.com/SantanderMetGroup/deep4downscaling.git
+   cd deep4downscaling
+   ```
+
+2. Create a `feature`/`fix` branch from `devel`:
+
+   ```bash
+   git checkout devel
+   git pull origin devel
+   git checkout -b feature/my-change
+   ```
+
+3. Work and keep in sync with `devel` (optional but recommended):
+
+   ```bash
+   git checkout devel
+   git pull origin devel
+   git checkout feature/my-change
+   git merge devel
+   ```
+
+4. Push and open a pull request into `devel`:
+
+   ```bash
+   git push -u origin feature/my-change
+   ```
+
+On GitHub, open a PR with base branch `devel` (not `main`).
+
+### For external contributors (no write access)
+
+1. Fork this repository on GitHub to your own account.
+2. Clone your fork:
+
+   ```bash
+   git clone https://github.com/<your-username>/deep4downscaling.git
+   cd deep4downscaling
+   ```
+
+3. Add the original repo as upstream and fetch:
+
+   ```bash
+   git remote add upstream https://github.com/SantanderMetGroup/deep4downscaling.git
+   git fetch upstream
+   ```
+
+4. Create a `feature`/`fix` branch from `upstream/devel`:
+
+   ```bash
+   git checkout -b feature/my-change upstream/devel
+   ```
+
+5. Commit your changes and push to your fork:
+
+   ```bash
+   git add ...
+   git commit -m "Describe your change"
+   git push -u origin feature/my-change
+   ```
+
+6. Open a pull request to this repository:
+
+   - base repository: `SantanderMetGroup/deep4downscaling`
+   - base branch: `devel`
+   - head repository: `<your-username>/deep4downscaling`
+   - compare branch: `feature/my-change`

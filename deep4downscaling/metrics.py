@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+
 """
 This module contains functions for evaluating the performance of downscaling models
 by calculating various metrics.
