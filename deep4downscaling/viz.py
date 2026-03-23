@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+
 """
 This module contains functions for visualizing xarray.Dataset objects.
 It provides tools for creating maps, plots, and visualizations of climate data.

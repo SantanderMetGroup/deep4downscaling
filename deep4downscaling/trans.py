@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+
 """
 This module contains functions for transforming and manipulating xarray.Dataset objects.
 It provides tools for data cleaning, alignment, standardization, and other common data operations.
