@@ -15,7 +15,7 @@ import torch
 import torch.nn as nn
 
 from ..vit.blocks import TransformerBlock
-from .blocks import CrossAttentionDecoderBlock
+from .blocks import CrossAttentionDecoderBlock, LocalCrossAttentionDecoderBlock
 
 
 class DeepESDv2(nn.Module):
@@ -28,6 +28,10 @@ class DeepESDv2(nn.Module):
     decoder uses learnable query embeddings (one per output grid point) of a
     smaller dimension (query_dim) that are projected to the encoder dimension
     through the Q weight matrix of the cross-attention mechanism.
+
+    When ``local_indices`` is provided the decoder uses local cross-attention:
+    each query attends only to a precomputed subset of K encoder tokens instead
+    of all of them, reducing cost from O(N_out * N_enc) to O(N_out * K).
 
     Parameters
     ----------
@@ -64,6 +68,11 @@ class DeepESDv2(nn.Module):
         the Q weight matrix in the first cross-attention block maps from query_dim
         to dim.
 
+    local_indices : torch.Tensor or None, optional
+        Long tensor of shape ``(n_out, K)`` mapping each query to K encoder
+        tokens for local cross-attention. When None (default), standard global
+        cross-attention is used.
+
     num_vars : int, optional
         Number of output variables. The output shape is always (B, N_out, num_vars).
         Default is 1.
@@ -76,8 +85,8 @@ class DeepESDv2(nn.Module):
     """
 
     def __init__(self, x_shape, n_out, patch_size, dim, depth, num_heads,
-                 mlp_dim, decoder_depth, query_dim, num_vars=1, dropout=0.,
-                 last_relu=False):
+                 mlp_dim, decoder_depth, query_dim, local_indices=None,
+                 num_vars=1, dropout=0., last_relu=False):
         super().__init__()
 
         if len(x_shape) != 4:
@@ -106,13 +115,21 @@ class DeepESDv2(nn.Module):
 
         # DECODER
 
+        self.use_local_attention = local_indices is not None
+        if self.use_local_attention:
+            self.register_buffer('local_indices', local_indices)
+            attn_mask = torch.ones(n_out, num_patches, dtype=torch.bool)
+            attn_mask.scatter_(1, local_indices, False)
+            self.register_buffer('local_attn_mask', attn_mask)
+
         self.query_embedding = nn.Parameter(torch.empty(1, n_out, query_dim))
         nn.init.trunc_normal_(self.query_embedding, std=0.02)
 
+        DecoderBlock = LocalCrossAttentionDecoderBlock if self.use_local_attention else CrossAttentionDecoderBlock
         decoder_blocks = []
         for i in range(decoder_depth):
             q_dim = query_dim if i == 0 else dim
-            decoder_blocks.append(CrossAttentionDecoderBlock(q_dim, dim, num_heads, mlp_dim, dropout))
+            decoder_blocks.append(DecoderBlock(q_dim, dim, num_heads, mlp_dim, dropout))
         self.decoder_blocks = nn.ModuleList(decoder_blocks)
         self.decoder_norm = nn.LayerNorm(dim)
 
@@ -137,7 +154,10 @@ class DeepESDv2(nn.Module):
         queries = self.query_embedding.expand(B, -1, -1)  # (B, N_out, query_dim)
 
         for block in self.decoder_blocks:
-            queries = block(queries, encoder_tokens)
+            if self.use_local_attention:
+                queries = block(queries, encoder_tokens, self.local_attn_mask)
+            else:
+                queries = block(queries, encoder_tokens)
         queries = self.decoder_norm(queries)               # (B, N_out, dim)
 
         out = self.output_head(queries)                    # (B, N_out, num_vars)
