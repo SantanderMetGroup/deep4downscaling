@@ -11,11 +11,13 @@ Authors:
     Jose González-Abad
 """
 
+from typing import Optional
+
 import torch
 import torch.nn as nn
 
 from ..vit.blocks import TransformerBlock
-from .blocks import CrossAttentionDecoderBlock, LocalCrossAttentionDecoderBlock
+from .blocks import CrossAttentionDecoderBlock, LocalCrossAttentionDecoderBlock, LinearCrossAttentionDecoderBlock
 
 
 class DeepESDv2(nn.Module):
@@ -57,8 +59,8 @@ class DeepESDv2(nn.Module):
         Number of attention heads in transformer and cross-attention blocks.
 
     mlp_dim : int
-        Hidden dimension of the MLP in the encoder transformer blocks and in the
-        decoder cross-attention blocks.
+        Hidden dimension of the MLP in the encoder transformer blocks and, when
+        the decoder applies a post-cross-attention MLP, of that MLP as well.
 
     decoder_depth : int
         Number of cross-attention decoder blocks.
@@ -73,6 +75,16 @@ class DeepESDv2(nn.Module):
         tokens for local cross-attention. When None (default), standard global
         cross-attention is used.
 
+    use_linear_attention : bool, optional
+        If True, use linear cross-attention in the decoder (lower cost for large
+        token counts). Cannot be combined with ``local_indices``. Default is False.
+
+    decoder_cross_attn_mlp : bool or None, optional
+        Whether each decoder block applies a feedforward MLP after cross-attention.
+        If ``None`` (default), the global cross-attention decoder omits this MLP
+        (historical behavior), while local and linear decoders include it. If
+        ``True`` or ``False``, that choice applies to all decoder block types.
+
     num_vars : int, optional
         Number of output variables. The output shape is always (B, N_out, num_vars).
         Default is 1.
@@ -86,6 +98,7 @@ class DeepESDv2(nn.Module):
 
     def __init__(self, x_shape, n_out, patch_size, dim, depth, num_heads,
                  mlp_dim, decoder_depth, query_dim, local_indices=None,
+                 use_linear_attention=False, decoder_cross_attn_mlp: Optional[bool] = None,
                  num_vars=1, dropout=0., last_relu=False):
         super().__init__()
 
@@ -94,6 +107,9 @@ class DeepESDv2(nn.Module):
 
         if x_shape[2] % patch_size != 0 or x_shape[3] % patch_size != 0:
             raise ValueError('Input spatial dimensions must be divisible by patch_size')
+
+        if local_indices is not None and use_linear_attention:
+            raise ValueError('Cannot use both local_indices and use_linear_attention simultaneously')
 
         self.last_relu = last_relu
 
@@ -125,17 +141,41 @@ class DeepESDv2(nn.Module):
         self.query_embedding = nn.Parameter(torch.empty(1, n_out, query_dim))
         nn.init.trunc_normal_(self.query_embedding, std=0.02)
 
-        DecoderBlock = LocalCrossAttentionDecoderBlock if self.use_local_attention else CrossAttentionDecoderBlock
+        if self.use_local_attention:
+            DecoderBlock = LocalCrossAttentionDecoderBlock
+        elif use_linear_attention:
+            DecoderBlock = LinearCrossAttentionDecoderBlock
+        else:
+            DecoderBlock = CrossAttentionDecoderBlock
+
+        if decoder_cross_attn_mlp is None:
+            use_cross_attn_mlp = (DecoderBlock is not CrossAttentionDecoderBlock)
+        else:
+            use_cross_attn_mlp = decoder_cross_attn_mlp
+
         decoder_blocks = []
         for i in range(decoder_depth):
             q_dim = query_dim if i == 0 else dim
-            decoder_blocks.append(DecoderBlock(q_dim, dim, num_heads, mlp_dim, dropout))
+            decoder_blocks.append(DecoderBlock(
+                q_dim, dim, num_heads, mlp_dim, dropout,
+                use_cross_attn_mlp=use_cross_attn_mlp))
         self.decoder_blocks = nn.ModuleList(decoder_blocks)
         self.decoder_norm = nn.LayerNorm(dim)
 
         self.output_head = nn.Linear(dim, num_vars)
 
     def forward(self, x):
+        """
+        Parameters
+        ----------
+        x : Tensor
+            Input batch of shape ``(B, C, H, W)`` matching ``x_shape``.
+
+        Returns
+        -------
+        Tensor
+            Predictions of shape ``(B, n_out, num_vars)``.
+        """
         B = x.shape[0]
 
         # ENCODER
