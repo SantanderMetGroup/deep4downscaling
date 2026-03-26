@@ -21,7 +21,9 @@ def standard_training_loop(model: torch.nn.Module, model_name: str, model_path: 
                            scheduler: torch.optim=None,
                            patience_early_stopping: int=None,
                            mixed_precision: bool=False,
-                           clip_gradients_norm: float=None) -> dict:
+                           clip_gradients_norm: float=None,
+                           save_checkpoint_every: int=None,
+                           resume_checkpoint: str=None) -> dict:
     
     """
     Standard training loop for a DL model in a supervised setting. Besides the
@@ -81,6 +83,19 @@ def standard_training_loop(model: torch.nn.Module, model_name: str, model_path: 
         Maximum norm of the gradients. If provided, the gradients are clipped
         to avoid exploding gradients.
 
+    save_checkpoint_every : int, optional
+        Frequency (in epochs) to save a full training checkpoint containing the
+        model weights, optimizer state, scheduler state, and loss history. The
+        checkpoint is saved at {model_path}/{model_name}_checkpoint.pt and only
+        the most recent one is kept. To resume training with only the model
+        weights (e.g., with a different optimizer), load them manually before
+        calling this function using torch.load(checkpoint_path)['model'].
+
+    resume_checkpoint : str, optional
+        Path to a checkpoint file to resume training from. Restores the full
+        training state (model, optimizer, scheduler, scaler, epoch and loss
+        history).
+
     Returns
     -------
     dict
@@ -104,8 +119,27 @@ def standard_training_loop(model: torch.nn.Module, model_name: str, model_path: 
     epoch_train_loss = []
     epoch_valid_loss = []
 
+    start_epoch = 0
+
+    # Resume from checkpoint if provided
+    if resume_checkpoint is not None:
+        print(f'Resuming training from checkpoint: {resume_checkpoint}')
+        checkpoint = torch.load(resume_checkpoint, map_location=device)
+        model.load_state_dict(checkpoint['model'])
+        optimizer.load_state_dict(checkpoint['optimizer'])
+        if scheduler is not None and checkpoint.get('scheduler') is not None:
+            scheduler.load_state_dict(checkpoint['scheduler'])
+        if mixed_precision and checkpoint.get('scaler') is not None:
+            scaler.load_state_dict(checkpoint['scaler'])
+        start_epoch = checkpoint['epoch'] + 1
+        epoch_train_loss = checkpoint.get('train_loss', [])
+        epoch_valid_loss = checkpoint.get('valid_loss', [])
+        if patience_early_stopping is not None:
+            best_val_loss = checkpoint.get('best_val_loss', math.inf)
+        print(f'Resumed from epoch {start_epoch}')
+
     # Iterate over epochs
-    for epoch in range(num_epochs):
+    for epoch in range(start_epoch, num_epochs):
         
         epoch_start = time.time()
         epoch_train_loss.append(0)
@@ -211,6 +245,19 @@ def standard_training_loop(model: torch.nn.Module, model_name: str, model_path: 
             log_msg = log_msg + ' (Model saved)'
             torch.save(model.state_dict(),
                        os.path.expanduser(f'{model_path}/{model_name}.pt'))
+
+        # Save training checkpoint
+        if save_checkpoint_every is not None and (epoch + 1) % save_checkpoint_every == 0:
+            ckpt_path = os.path.expanduser(f'{model_path}/{model_name}_checkpoint.pt')
+            torch.save({'epoch': epoch,
+                        'model': model.state_dict(),
+                        'optimizer': optimizer.state_dict(),
+                        'scheduler': scheduler.state_dict() if scheduler is not None else None,
+                        'scaler': scaler.state_dict() if mixed_precision else None,
+                        'best_val_loss': best_val_loss if patience_early_stopping is not None else None,
+                        'train_loss': epoch_train_loss,
+                        'valid_loss': epoch_valid_loss}, ckpt_path)
+            log_msg = log_msg + ' (Checkpoint saved)'
         
         # Print log
         print(log_msg)
@@ -229,7 +276,9 @@ def adversarial_training_loop(model: torch.nn.Module, model_name: str, model_pat
                                scheduler: torch.optim=None,
                                patience_early_stopping: int=None,
                                mixed_precision: bool=False,
-                               epsilon: float=0.01) -> dict:
+                               epsilon: float=0.01,
+                               save_checkpoint_every: int=None,
+                               resume_checkpoint: str=None) -> dict:
     
     """
     Adversarial training loop for Deep Ensembles using FGSM (Fast Gradient Sign Method).
@@ -297,6 +346,19 @@ def adversarial_training_loop(model: torch.nn.Module, model_name: str, model_pat
         Magnitude of adversarial perturbation. Following the Deep Ensembles
         paper, the default is 1% of the input range (0.01). This value assumes
         standardized inputs.
+
+    save_checkpoint_every : int, optional
+        Frequency (in epochs) to save a full training checkpoint containing the
+        model weights, optimizer state, scheduler state, and loss history. The
+        checkpoint is saved at {model_path}/{model_name}_checkpoint.pt and only
+        the most recent one is kept. To resume training with only the model
+        weights (e.g., with a different optimizer), load them manually before
+        calling this function using torch.load(checkpoint_path)['model'].
+
+    resume_checkpoint : str, optional
+        Path to a checkpoint file to resume training from. Restores the full
+        training state (model, optimizer, scheduler, scaler, epoch and loss
+        history).
     
     Returns
     -------
@@ -326,9 +388,28 @@ def adversarial_training_loop(model: torch.nn.Module, model_name: str, model_pat
     # Register the losses per epoch
     epoch_train_loss = []
     epoch_valid_loss = []
+
+    start_epoch = 0
+
+    # Resume from checkpoint if provided
+    if resume_checkpoint is not None:
+        print(f'Resuming training from checkpoint: {resume_checkpoint}')
+        checkpoint = torch.load(resume_checkpoint, map_location=device)
+        model.load_state_dict(checkpoint['model'])
+        optimizer.load_state_dict(checkpoint['optimizer'])
+        if scheduler is not None and checkpoint.get('scheduler') is not None:
+            scheduler.load_state_dict(checkpoint['scheduler'])
+        if mixed_precision and checkpoint.get('scaler') is not None:
+            scaler.load_state_dict(checkpoint['scaler'])
+        start_epoch = checkpoint['epoch'] + 1
+        epoch_train_loss = checkpoint.get('train_loss', [])
+        epoch_valid_loss = checkpoint.get('valid_loss', [])
+        if patience_early_stopping is not None:
+            best_val_loss = checkpoint.get('best_val_loss', math.inf)
+        print(f'Resumed from epoch {start_epoch}')
     
     # Iterate over epochs
-    for epoch in range(num_epochs):
+    for epoch in range(start_epoch, num_epochs):
         
         epoch_start = time.time()
         epoch_train_loss.append(0)
@@ -492,6 +573,19 @@ def adversarial_training_loop(model: torch.nn.Module, model_name: str, model_pat
             log_msg = log_msg + ' (Model saved)'
             torch.save(model.state_dict(),
                        os.path.expanduser(f'{model_path}/{model_name}.pt'))
+
+        # Save training checkpoint
+        if save_checkpoint_every is not None and (epoch + 1) % save_checkpoint_every == 0:
+            ckpt_path = os.path.expanduser(f'{model_path}/{model_name}_checkpoint.pt')
+            torch.save({'epoch': epoch,
+                        'model': model.state_dict(),
+                        'optimizer': optimizer.state_dict(),
+                        'scheduler': scheduler.state_dict() if scheduler is not None else None,
+                        'scaler': scaler.state_dict() if mixed_precision else None,
+                        'best_val_loss': best_val_loss if patience_early_stopping is not None else None,
+                        'train_loss': epoch_train_loss,
+                        'valid_loss': epoch_valid_loss}, ckpt_path)
+            log_msg = log_msg + ' (Checkpoint saved)'
         
         # Print log
         print(log_msg)
@@ -522,7 +616,7 @@ def standard_cgan_training_loop(generator: torch.nn.Module,
                                 scheduler: torch.optim.lr_scheduler._LRScheduler=None,
                                 mixed_precision: bool=False,
                                 save_checkpoint_every: int=None,
-                                resume_checkpoint: int=None) -> dict:
+                                resume_checkpoint: str=None) -> dict:
     """
     Adversarial training loop for standard cGANs (BCE-based adversarial loss function) with
     extended control and checkpoint options.
@@ -584,10 +678,19 @@ def standard_cgan_training_loop(generator: torch.nn.Module,
         If True, enables automatic mixed precision training.
 
     save_checkpoint_every : int, optional
-        Frequency (in epochs) to save model checkpoints (both G and D).
+        Frequency (in epochs) to save a full training checkpoint containing
+        the generator and discriminator weights, optimizer states, scheduler
+        state, and loss history. The checkpoint is saved at
+        {model_path}/{gen_name}_checkpoint.pt and only the most recent one
+        is kept. To resume training with only the model weights (e.g., with
+        a different optimizer), load them manually before calling this
+        function using torch.load(checkpoint_path)['generator'] and
+        torch.load(checkpoint_path)['discriminator'].
 
-    resume_checkpoint : int, optional
-        Checkpoint step (epoch number) to resume training from.
+    resume_checkpoint : str, optional
+        Path to a checkpoint file to resume training from. Restores the full
+        training state (generator, discriminator, optimizers, scheduler,
+        scalers, epoch and loss history).
     """
 
     os.makedirs(model_path, exist_ok=True)
@@ -607,24 +710,37 @@ def standard_cgan_training_loop(generator: torch.nn.Module,
     start_epoch = 0
     best_val_loss = math.inf
 
-    # Resume checkpoint (if provided)
-    if resume_checkpoint is not None:
-        ckpt_path = os.path.join(model_path, f"checkpoint_epoch_{resume_checkpoint}.pt")
-        if os.path.exists(ckpt_path):
-            print(f"Resuming training from checkpoint: {ckpt_path}")
-            checkpoint = torch.load(ckpt_path, map_location=device)
-            generator.load_state_dict(checkpoint["generator"])
-            discriminator.load_state_dict(checkpoint["discriminator"])
-            optimizer_G.load_state_dict(checkpoint["optimizer_G"])
-            optimizer_D.load_state_dict(checkpoint["optimizer_D"])
-            start_epoch = checkpoint["epoch"] + 1
-            best_val_loss = checkpoint.get("best_val_loss", math.inf)
-            print(f"Resumed from epoch {start_epoch}")
-
     # Epoch tracking
     epoch_G_loss, epoch_D_loss, epoch_val_loss = [], [], []
     epoch_adv_loss, epoch_recon_loss = [], []
     epoch_loss_D_real, epoch_loss_D_fake = [], []
+
+    # Resume from checkpoint if provided
+    if resume_checkpoint is not None:
+        print(f'Resuming training from checkpoint: {resume_checkpoint}')
+        checkpoint = torch.load(resume_checkpoint, map_location=device)
+        generator.load_state_dict(checkpoint['generator'])
+        discriminator.load_state_dict(checkpoint['discriminator'])
+        optimizer_G.load_state_dict(checkpoint['optimizer_G'])
+        optimizer_D.load_state_dict(checkpoint['optimizer_D'])
+        if scheduler is not None and checkpoint.get('scheduler') is not None:
+            scheduler.load_state_dict(checkpoint['scheduler'])
+        if mixed_precision:
+            if checkpoint.get('scaler_G') is not None:
+                scaler_G.load_state_dict(checkpoint['scaler_G'])
+            if checkpoint.get('scaler_D') is not None:
+                scaler_D.load_state_dict(checkpoint['scaler_D'])
+        start_epoch = checkpoint['epoch'] + 1
+        best_val_loss = checkpoint.get('best_val_loss', math.inf)
+        train_losses = checkpoint.get('train_losses', {})
+        epoch_G_loss = train_losses.get('train_G', [])
+        epoch_D_loss = train_losses.get('train_D', [])
+        epoch_adv_loss = train_losses.get('adv_loss', [])
+        epoch_recon_loss = train_losses.get('recon_loss', [])
+        epoch_loss_D_real = train_losses.get('loss_D_real', [])
+        epoch_loss_D_fake = train_losses.get('loss_D_fake', [])
+        epoch_val_loss = train_losses.get('valid', [])
+        print(f'Resumed from epoch {start_epoch}')
 
     # Main training loop
     for epoch in range(start_epoch, num_epochs):
@@ -757,26 +873,30 @@ def standard_cgan_training_loop(generator: torch.nn.Module,
                     f" | recon_loss {np.round(epoch_recon_loss[-1], 4)}")
 
         # Model saving
-        save_model = True
         log_msg += " (Model saved)"
         torch.save(generator.state_dict(), os.path.join(model_path, f"{gen_name}.pt"))
         torch.save(discriminator.state_dict(), os.path.join(model_path, f"{disc_name}.pt"))
 
-        # Save checkpoint
+        # Save training checkpoint
         if save_checkpoint_every is not None and (epoch + 1) % save_checkpoint_every == 0:
-            ckpt_path = os.path.join(model_path, f"checkpoint_epoch_{epoch+1}.pt")
-            torch.save({
-                "epoch": epoch,
-                "generator": generator.state_dict(),
-                "discriminator": discriminator.state_dict(),
-                "optimizer_G": optimizer_G.state_dict(),
-                "optimizer_D": optimizer_D.state_dict(),
-                "best_val_loss": best_val_loss,
-            }, ckpt_path)
-            if os.path.isfile(model_path+f"checkpoint_epoch_{epoch-save_checkpoint_every+1}.pt"):
-                os.remove(model_path+f"checkpoint_epoch_{epoch-save_checkpoint_every+1}.pt")
-
-            log_msg += f" | Checkpoint saved ({ckpt_path})"
+            ckpt_path = os.path.join(model_path, f"{gen_name}_checkpoint.pt")
+            torch.save({'epoch': epoch,
+                        'generator': generator.state_dict(),
+                        'discriminator': discriminator.state_dict(),
+                        'optimizer_G': optimizer_G.state_dict(),
+                        'optimizer_D': optimizer_D.state_dict(),
+                        'scheduler': scheduler.state_dict() if scheduler is not None else None,
+                        'scaler_G': scaler_G.state_dict() if mixed_precision else None,
+                        'scaler_D': scaler_D.state_dict() if mixed_precision else None,
+                        'best_val_loss': best_val_loss,
+                        'train_losses': {'train_G': epoch_G_loss,
+                                         'train_D': epoch_D_loss,
+                                         'adv_loss': epoch_adv_loss,
+                                         'recon_loss': epoch_recon_loss,
+                                         'loss_D_real': epoch_loss_D_real,
+                                         'loss_D_fake': epoch_loss_D_fake,
+                                         'valid': epoch_val_loss}}, ckpt_path)
+            log_msg += ' (Checkpoint saved)'
 
         print(log_msg)
 
