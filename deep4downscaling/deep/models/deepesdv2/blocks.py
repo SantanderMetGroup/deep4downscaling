@@ -12,6 +12,53 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 
+class FourierPositionalEncoding(nn.Module):
+    """
+    Learnable Fourier positional encoding for multi-dimensional spatial coordinates.
+
+    Maps each coordinate vector (e.g. latitude/longitude of a grid point) to a
+    dense positional embedding through a learnable frequency projection followed
+    by sinusoidal activations and a linear output projection.
+
+    Li, Y., Si, S., Li, G., Hsieh, C.-J., & Bengio, S. (2021).
+    Learnable Fourier Features for Multi-Dimensional Spatial Positional Encoding.
+    Advances in Neural Information Processing Systems 34 (NeurIPS 2021).
+    arXiv:2106.02795.
+
+    Parameters
+    ----------
+    coord_dim : int
+        Dimensionality of the input coordinates (e.g. 2 for latitude/longitude)
+
+    hidden_dim : int
+        Number of Fourier features (learnable frequencies).
+
+    output_dim : int
+        Dimension of the output positional encoding.
+    """
+
+    def __init__(self, coord_dim, hidden_dim, output_dim):
+        super().__init__()
+        self.freq_proj = nn.Linear(coord_dim, hidden_dim)
+        self.output_proj = nn.Linear(2 * hidden_dim, output_dim)
+
+    def forward(self, coords):
+        """
+        Parameters
+        ----------
+        coords : Tensor
+            Coordinate tensor of shape ``(N, coord_dim)``.
+
+        Returns
+        -------
+        Tensor
+            Positional encoding of shape ``(N, output_dim)``.
+        """
+        x = self.freq_proj(coords)                          # (N, hidden_dim)
+        x = torch.cat([x.sin(), x.cos()], dim=-1)          # (N, 2 * hidden_dim)
+        return self.output_proj(x)                          # (N, output_dim)
+
+
 class MultiHeadCrossAttention(nn.Module):
     """
     Multi-head cross-attention supporting different query and key/value dimensions.

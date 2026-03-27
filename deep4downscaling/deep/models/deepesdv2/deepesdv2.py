@@ -4,8 +4,9 @@
 This module contains the DeepESDv2 model for statistical downscaling.
 
 DeepESDv2 uses a Vision Transformer (ViT) encoder and a cross-attention decoder.
-The decoder uses learnable query embeddings (one per output grid point) that
-cross-attend to encoder tokens to produce predictions.
+The decoder queries can be either learnable embeddings (one per output grid
+point) or coordinate-based Fourier positional encodings derived from the
+geographic position of each grid point.
 
 Authors:
     Jose González-Abad
@@ -17,7 +18,8 @@ import torch
 import torch.nn as nn
 
 from ..vit.blocks import TransformerBlock
-from .blocks import CrossAttentionDecoderBlock, LocalCrossAttentionDecoderBlock, LinearCrossAttentionDecoderBlock
+from .blocks import (CrossAttentionDecoderBlock, FourierPositionalEncoding,
+                      LinearCrossAttentionDecoderBlock, LocalCrossAttentionDecoderBlock)
 
 
 class DeepESDv2(nn.Module):
@@ -27,9 +29,16 @@ class DeepESDv2(nn.Module):
 
     The encoder is identical to ViT: the input is split into patches, embedded,
     processed by transformer blocks, and produces a set of encoder tokens. The
-    decoder uses learnable query embeddings (one per output grid point) of a
-    smaller dimension (query_dim) that are projected to the encoder dimension
-    through the Q weight matrix of the cross-attention mechanism.
+    decoder uses query embeddings of dimension ``query_dim`` that are projected
+    to the encoder dimension through the Q weight matrix of the cross-attention
+    mechanism. Two query-embedding modes are supported:
+
+    * **Learnable (default):** one free ``nn.Parameter`` per output grid point,
+      used when ``grid_coords`` is ``None``.
+    * **Fourier positional encoding:** each query embedding is computed from
+      the geographic coordinates of the corresponding grid point through a
+      :class:`.FourierPositionalEncoding` module (Li et al., NeurIPS 2021;
+      arXiv:2106.02795). Activated by passing ``grid_coords``.
 
     When ``local_indices`` is provided the decoder uses local cross-attention:
     each query attends only to a precomputed subset of K encoder tokens instead
@@ -42,8 +51,7 @@ class DeepESDv2(nn.Module):
         The spatial dimensions must be divisible by patch_size.
 
     n_out : int
-        Number of output grid points. Determines the number of learnable query
-        embeddings.
+        Number of output grid points.
 
     patch_size : int
         Size of the patches extracted from the input for building token embeddings.
@@ -66,7 +74,7 @@ class DeepESDv2(nn.Module):
         Number of cross-attention decoder blocks.
 
     query_dim : int
-        Dimension of the learnable query embeddings. Should be smaller than dim;
+        Dimension of the decoder query embeddings. Should be smaller than dim;
         the Q weight matrix in the first cross-attention block maps from query_dim
         to dim.
 
@@ -85,6 +93,18 @@ class DeepESDv2(nn.Module):
         (historical behavior), while local and linear decoders include it. If
         ``True`` or ``False``, that choice applies to all decoder block types.
 
+    grid_coords : torch.Tensor or None, optional
+        Float tensor of shape ``(n_out, coord_dim)`` with the spatial coordinates
+        (e.g. latitude/longitude) of each output grid point. When provided, the
+        decoder uses :class:`.FourierPositionalEncoding` to compute query
+        embeddings from these coordinates instead of learnable embeddings.
+        Default is None (learnable embeddings).
+
+    fourier_hidden_dim : int or None, optional
+        Number of Fourier features (hidden dimension) in
+        :class:`.FourierPositionalEncoding`. Only used when ``grid_coords`` is
+        provided. Defaults to ``query_dim // 2`` when None.
+
     num_vars : int, optional
         Number of output variables. The output shape is always (B, N_out, num_vars).
         Default is 1.
@@ -99,6 +119,7 @@ class DeepESDv2(nn.Module):
     def __init__(self, x_shape, n_out, patch_size, dim, depth, num_heads,
                  mlp_dim, decoder_depth, query_dim, local_indices=None,
                  use_linear_attention=False, decoder_cross_attn_mlp: Optional[bool] = None,
+                 grid_coords=None, fourier_hidden_dim=None,
                  num_vars=1, dropout=0., last_relu=False):
         super().__init__()
 
@@ -138,8 +159,19 @@ class DeepESDv2(nn.Module):
             attn_mask.scatter_(1, local_indices, False)
             self.register_buffer('local_attn_mask', attn_mask)
 
-        self.query_embedding = nn.Parameter(torch.empty(1, n_out, query_dim))
-        nn.init.trunc_normal_(self.query_embedding, std=0.02)
+        if grid_coords is not None:
+            if grid_coords.shape[0] != n_out:
+                raise ValueError('grid_coords first dim must equal n_out')
+            self.register_buffer('grid_coords', grid_coords)
+            fh = fourier_hidden_dim if fourier_hidden_dim is not None else query_dim // 2
+            self.query_encoder = FourierPositionalEncoding(
+                grid_coords.shape[1], fh, query_dim)
+            self.query_embedding = None
+        else:
+            self.grid_coords = None
+            self.query_encoder = None
+            self.query_embedding = nn.Parameter(torch.empty(1, n_out, query_dim))
+            nn.init.trunc_normal_(self.query_embedding, std=0.02)
 
         if self.use_local_attention:
             DecoderBlock = LocalCrossAttentionDecoderBlock
@@ -191,7 +223,11 @@ class DeepESDv2(nn.Module):
 
         # DECODER
 
-        queries = self.query_embedding.expand(B, -1, -1)  # (B, N_out, query_dim)
+        if self.query_embedding is not None:
+            queries = self.query_embedding.expand(B, -1, -1)       # (B, N_out, query_dim)
+        else:
+            queries = self.query_encoder(self.grid_coords)         # (N_out, query_dim)
+            queries = queries.unsqueeze(0).expand(B, -1, -1)       # (B, N_out, query_dim)
 
         for block in self.decoder_blocks:
             if self.use_local_attention:
