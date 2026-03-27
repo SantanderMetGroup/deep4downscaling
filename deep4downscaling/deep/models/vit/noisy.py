@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: GPL-3.0-or-later
+# SPDX-License-Identifier: MIT
 
 """
 This module contains the Noisy Vision Transformer (NoisyViT) model for statistical downscaling.

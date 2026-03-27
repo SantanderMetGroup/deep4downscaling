@@ -8,10 +8,10 @@ version = "1.2.0"
 description = "A Python library for developing deep learning models for statistical downscaling."
 readme = "README.md"
 authors = [{ name = "Santander MetGroup" }]
-license = { text = "GPL-3.0" }
+license = { text = "MIT" }
 classifiers = [
     "Programming Language :: Python :: 3",
-    "License :: OSI Approved :: GNU General Public License v3 (GPLv3)",
+    "License :: OSI Approved :: MIT License",
     "Operating System :: OS Independent",
 ]
 dependencies = [

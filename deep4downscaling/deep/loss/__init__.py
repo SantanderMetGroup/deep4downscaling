@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: GPL-3.0-or-later
+# SPDX-License-Identifier: MIT
 
 from .standard import MaeLoss, MseLoss
 from .nll import NLLGaussianLoss, NLLBerGammaLoss

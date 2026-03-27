@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: GPL-3.0-or-later
+# SPDX-License-Identifier: MIT
 
 """
 Negative Log-Likelihood loss functions: Gaussian and Bernoulli-Gamma.
