@@ -37,11 +37,12 @@ class CRPSLoss(nn.Module):
         For proper CRPS computation, at least 2 ensemble members are required.
     """
 
-    def __init__(self, ignore_nans: bool) -> None:
+    def __init__(self, ignore_nans: bool, beta: int = 1) -> None:
         super(CRPSLoss, self).__init__()
         self.ignore_nans = ignore_nans
+        self.beta = beta
 
-    def forward(self, target: torch.Tensor, output, beta: int = 1) -> torch.Tensor:
+    def forward(self, target: torch.Tensor, output) -> torch.Tensor:
 
         if isinstance(output, torch.Tensor):
             output = [output]
@@ -57,7 +58,7 @@ class CRPSLoss(nn.Module):
         # Error between target and each prediction
         first_term = 0.0
         for i in range(M):
-            first_term += torch.abs(target - output[i]) ** beta
+            first_term += torch.abs(target - output[i]) ** self.beta
         first_term = first_term / M
 
         # Difference between all pairs of predictions
@@ -65,7 +66,7 @@ class CRPSLoss(nn.Module):
             second_term = 0.0
             for i in range(M):
                 for j in range(M):
-                    second_term += torch.abs(output[i] - output[j]) ** beta
+                    second_term += torch.abs(output[i] - output[j]) ** self.beta
             second_term = second_term / (2*M*(M-1)) # Fair CRPS
         else:
             second_term = 0.0
