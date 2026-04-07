@@ -7,6 +7,8 @@ Authors:
     Jose González-Abad
 """
 
+import math
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -57,6 +59,46 @@ class FourierPositionalEncoding(nn.Module):
         x = self.freq_proj(coords)                          # (N, hidden_dim)
         x = torch.cat([x.sin(), x.cos()], dim=-1)          # (N, 2 * hidden_dim)
         return self.output_proj(x)                          # (N, output_dim)
+
+
+class SinCosPositionalEncoding(nn.Module):
+    """
+    Fixed sinusoidal positional encoding for spatial coordinates.
+
+    Maps each coordinate vector (e.g. latitude/longitude) to a
+    fixed-dimensional embedding by converting from degrees to radians and
+    concatenating sines and cosines.  Contains no learnable parameters.
+
+    Inspired by the coordinate encoding used in the Anemoi framework
+    (Lang et al., 2024; ECMWF), where node positions are represented as
+    ``[sin(lat), sin(lon), cos(lat), cos(lon)]``.
+
+    Parameters
+    ----------
+    coord_dim : int
+        Dimensionality of the input coordinates (e.g. 2 for latitude/longitude).
+        The output dimension is ``2 * coord_dim``.
+    """
+
+    def __init__(self, coord_dim):
+        super().__init__()
+        self.coord_dim = coord_dim
+        self.output_dim = 2 * coord_dim
+
+    def forward(self, coords):
+        """
+        Parameters
+        ----------
+        coords : Tensor
+            Coordinate tensor of shape ``(N, coord_dim)`` **in degrees**.
+
+        Returns
+        -------
+        Tensor
+            Positional encoding of shape ``(N, 2 * coord_dim)``.
+        """
+        coords_rad = coords * (math.pi / 180.0)
+        return torch.cat([coords_rad.sin(), coords_rad.cos()], dim=-1)
 
 
 class MultiHeadCrossAttention(nn.Module):
