@@ -23,9 +23,8 @@ import torch
 import torch.nn as nn
 
 from ..vit.blocks import NoiseEmbedding, TransformerBlockCLN
-from .blocks import (CrossAttentionDecoderBlock, FourierPositionalEncoding,
-                      LinearCrossAttentionDecoderBlock, LocalCrossAttentionDecoderBlock,
-                      SinCosPositionalEncoding)
+from .blocks import (CrossAttentionDecoderBlock, LocalCrossAttentionDecoderBlock,
+                      NeRFPositionalEncoding)
 
 
 class NoisyDeepESDv2(nn.Module):
@@ -40,22 +39,15 @@ class NoisyDeepESDv2(nn.Module):
 
     The decoder uses query embeddings of dimension ``query_dim`` that are
     projected to the encoder dimension through the Q weight matrix of the
-    cross-attention mechanism. Three query-embedding modes are supported:
+    cross-attention mechanism. Two query-embedding modes are supported:
 
     * **Learnable (default):** one free ``nn.Parameter`` per output grid point,
       used when ``grid_coords`` is ``None``.
-    * **Fourier positional encoding:** each query embedding is computed from
-      the geographic coordinates of the corresponding grid point through a
-      :class:`.FourierPositionalEncoding` module (Li et al., NeurIPS 2021;
-      arXiv:2106.02795). Activated by passing ``grid_coords`` with
-      ``use_sincos_query=False``.
-    * **Fixed sin/cos positional encoding:** each query embedding is a
-      deterministic, parameter-free vector ``[sin(lat), sin(lon), cos(lat),
-      cos(lon)]`` (coordinates converted from degrees to radians internally).
-      Inspired by the Anemoi framework (Lang et al., 2024; ECMWF). Activated
-      by passing ``grid_coords`` with ``use_sincos_query=True``. In this mode
-      the effective query dimension is ``2 * coord_dim`` (e.g. 4 for
-      latitude/longitude) regardless of ``query_dim``.
+    * **NeRF positional encoding:** multi-frequency sinusoidal encoding
+      (Mildenhall et al., ECCV 2020) that evaluates sin/cos at geometrically
+      increasing frequencies, producing highly discriminative embeddings even
+      for spatially close grid points. Activated by passing ``grid_coords``.
+      A linear projection maps the raw features to ``query_dim``.
 
     When ``local_indices`` is provided the decoder uses local cross-attention:
     each query attends only to a precomputed subset of K encoder tokens instead
@@ -101,41 +93,31 @@ class NoisyDeepESDv2(nn.Module):
         Dimension of the noise embeddings produced by NoiseEmbedding.
 
     query_dim : int
-        Dimension of the decoder query embeddings. Used by the learnable and
-        Fourier modes. Ignored when ``use_sincos_query`` is True (the effective
-        dimension is derived from ``grid_coords``).
+        Dimension of the decoder query embeddings. Used by the learnable mode
+        and as the output projection dimension in the NeRF mode.
 
     local_indices : torch.Tensor or None, optional
         Long tensor of shape ``(n_out, K)`` mapping each query to K encoder
         tokens for local cross-attention. When None (default), standard global
         cross-attention is used.
 
-    use_linear_attention : bool, optional
-        If True, use linear cross-attention in the decoder (lower cost for large
-        token counts). Cannot be combined with ``local_indices``. Default is False.
-
     decoder_cross_attn_mlp : bool or None, optional
         Whether each decoder block applies a feedforward MLP after cross-attention.
         If ``None`` (default), the global cross-attention decoder omits this MLP
-        (historical behavior), while local and linear decoders include it. If
-        ``True`` or ``False``, that choice applies to all decoder block types.
+        (historical behavior), while local decoders include it. If ``True`` or
+        ``False``, that choice applies to all decoder block types.
 
     grid_coords : torch.Tensor or None, optional
         Float tensor of shape ``(n_out, coord_dim)`` with the spatial coordinates
-        (e.g. latitude/longitude **in degrees**) of each output grid point. Required
-        for both Fourier and sin/cos query modes; when ``None`` (default), learnable
-        embeddings are used.
+        of each output grid point. Coordinates should be pre-normalized to a
+        suitable range (e.g. ``[-1, 1]``) before being passed; the model stores
+        and uses them as-is. When provided, NeRF positional encoding is used for
+        the decoder queries; when ``None`` (default), learnable embeddings are
+        used instead.
 
-    fourier_hidden_dim : int or None, optional
-        Number of Fourier features (hidden dimension) in
-        :class:`.FourierPositionalEncoding`. Only used when ``grid_coords`` is
-        provided and ``use_sincos_query`` is False. Defaults to ``query_dim // 2``
-        when None.
-
-    use_sincos_query : bool, optional
-        If True and ``grid_coords`` is provided, use fixed sin/cos positional
-        encoding (:class:`.SinCosPositionalEncoding`) instead of learnable
-        Fourier features. Default is False.
+    nerf_num_frequencies : int, optional
+        Number of frequency octaves for the NeRF encoding. Only used when
+        ``grid_coords`` is provided. Default is 10.
 
     members_for_training : int, optional
         Number of ensemble members to generate during training (each with an
@@ -154,10 +136,9 @@ class NoisyDeepESDv2(nn.Module):
 
     def __init__(self, x_shape, n_out, patch_size, dim, depth, num_heads,
                  mlp_dim, decoder_depth, noise_channels, noise_dim, query_dim,
-                 local_indices=None, use_linear_attention=False,
+                 local_indices=None,
                  decoder_cross_attn_mlp: Optional[bool] = None,
-                 grid_coords=None, fourier_hidden_dim=None,
-                 use_sincos_query=False,
+                 grid_coords=None, nerf_num_frequencies=10,
                  members_for_training=2, num_vars=1,
                  dropout=0., last_relu=False):
         super().__init__()
@@ -167,9 +148,6 @@ class NoisyDeepESDv2(nn.Module):
 
         if x_shape[2] % patch_size != 0 or x_shape[3] % patch_size != 0:
             raise ValueError('Input spatial dimensions must be divisible by patch_size')
-
-        if local_indices is not None and use_linear_attention:
-            raise ValueError('Cannot use both local_indices and use_linear_attention simultaneously')
 
         self.noise_channels = noise_channels
         self.members_for_training = members_for_training
@@ -202,22 +180,14 @@ class NoisyDeepESDv2(nn.Module):
             attn_mask.scatter_(1, local_indices, False)
             self.register_buffer('local_attn_mask', attn_mask)
 
-        if grid_coords is not None and use_sincos_query:
+        if grid_coords is not None:
             if grid_coords.shape[0] != n_out:
                 raise ValueError('grid_coords first dim must equal n_out')
             self.register_buffer('grid_coords', grid_coords)
-            self.query_encoder = SinCosPositionalEncoding(grid_coords.shape[1])
+            self.query_encoder = NeRFPositionalEncoding(
+                grid_coords.shape[1], nerf_num_frequencies, output_dim=query_dim)
             self.query_embedding = None
-            effective_query_dim = 2 * grid_coords.shape[1]
-        elif grid_coords is not None:
-            if grid_coords.shape[0] != n_out:
-                raise ValueError('grid_coords first dim must equal n_out')
-            self.register_buffer('grid_coords', grid_coords)
-            fh = fourier_hidden_dim if fourier_hidden_dim is not None else query_dim // 2
-            self.query_encoder = FourierPositionalEncoding(
-                grid_coords.shape[1], fh, query_dim)
-            self.query_embedding = None
-            effective_query_dim = query_dim
+            effective_query_dim = self.query_encoder.output_dim
         else:
             self.grid_coords = None
             self.query_encoder = None
@@ -227,8 +197,6 @@ class NoisyDeepESDv2(nn.Module):
 
         if self.use_local_attention:
             DecoderBlock = LocalCrossAttentionDecoderBlock
-        elif use_linear_attention:
-            DecoderBlock = LinearCrossAttentionDecoderBlock
         else:
             DecoderBlock = CrossAttentionDecoderBlock
 
