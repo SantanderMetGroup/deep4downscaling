@@ -104,7 +104,7 @@ class ConditionalLayerNorm(nn.Module):
         x_norm = self.norm(x)
         gamma = self.gamma(z)
         beta = self.beta(z)
-        return gamma * x_norm + beta
+        return (1 + gamma) * x_norm + beta
 
 class TransformerBlockCLN(nn.Module):
     """Transformer encoder block with multi-head attention and MLP, conditioned on noise
@@ -116,8 +116,8 @@ class TransformerBlockCLN(nn.Module):
         self.norm1 = ConditionalLayerNorm(dim, noise_dim)
         self.attn = MultiHeadAttention(dim, num_heads, dropout)
 
-        self.mlp = nn.Sequential(nn.LayerNorm(dim),
-                                 nn.Linear(dim, mlp_dim),
+        self.norm2 = ConditionalLayerNorm(dim, noise_dim)
+        self.mlp = nn.Sequential(nn.Linear(dim, mlp_dim),
                                  nn.GELU(),
                                  nn.Dropout(dropout),
                                  nn.Linear(mlp_dim, dim),
@@ -125,7 +125,7 @@ class TransformerBlockCLN(nn.Module):
 
     def forward(self, x, z):
         x = x + self.attn(self.norm1(x, z))
-        x = x + self.mlp(x)
+        x = x + self.mlp(self.norm2(x, z))
         return x
 
 class CNNBlock(nn.Module):

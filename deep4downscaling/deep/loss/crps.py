@@ -136,11 +136,10 @@ class CRPSSpectralLoss(nn.Module):
         if spatial_resolution is not None and spatial_resolution <= 0:
             raise ValueError("spatial_resolution must be > 0 when provided.")
         self.spatial_resolution = spatial_resolution
-        self.filter_nans = False # Control whether to filter out nans in _CRPS_pointwise
 
-    def _CRPS_pointwise(self, target: torch.Tensor, output) -> torch.Tensor:
-        
-        if self.ignore_nans and self.filter_nans:
+    def _CRPS_pointwise(self, target: torch.Tensor,output,
+                        *, filter_nans: bool = False) -> torch.Tensor:
+        if self.ignore_nans and filter_nans:
             nans_idx = torch.isnan(target)
             target = target[~nans_idx]
             output = [out[~nans_idx] for out in output]
@@ -169,11 +168,7 @@ class CRPSSpectralLoss(nn.Module):
 
         return loss
 
-    def _FFT(self, data: torch.Tensor) -> torch.Tensor:
-
-        # It does not make sense to filter out nans in the spectral domain
-        self.filter_nans = False
-
+    def _FFT(self, data: torch.Tensor) -> list[torch.Tensor]:
         # Fill nans with 0 for the FFT computation
         if isinstance(data, torch.Tensor): # For the target
             data = [torch.nan_to_num(data, nan=0.0)]
@@ -189,13 +184,13 @@ class CRPSSpectralLoss(nn.Module):
         elif data[0].ndim == 3:
             data = [member.view(B, M, self.H_shape, self.W_shape) for member in data]
 
-        # Compute FFT
-        data = [torch.fft.rfft2(member) for member in data]
+        # Compute FFT (full spectrum for even frequency weighting vs rfft2 half-spectrum)
+        data = [torch.fft.fft2(member) for member in data]
 
         # Optionally remove frequencies beyond the Nyquist limit
         if self.spatial_resolution is not None:
             k_nyquist = 2.0 * torch.pi / (2.0 * self.spatial_resolution)
-            kx = 2.0 * torch.pi * torch.fft.rfftfreq(self.W_shape, d=self.spatial_resolution)
+            kx = 2.0 * torch.pi * torch.fft.fftfreq(self.W_shape, d=self.spatial_resolution)
             ky = 2.0 * torch.pi * torch.fft.fftfreq(self.H_shape, d=self.spatial_resolution)
             k_radius = torch.sqrt(ky[:, None] ** 2 + kx[None, :] ** 2)
             low_pass_mask = k_radius <= k_nyquist
@@ -209,9 +204,8 @@ class CRPSSpectralLoss(nn.Module):
         if isinstance(output, torch.Tensor):
             output = [output]
 
-        # Compute standard CRPS
-        self.filter_nans = True
-        crps_field = self._CRPS_pointwise(target, output)
+        # Compute standard CRPS (spectral branch does not filter nans; see _CRPS_pointwise)
+        crps_field = self._CRPS_pointwise(target, output, filter_nans=True)
 
         # Compute spectral CRPS
         target_fft = self._FFT(target)[0]
