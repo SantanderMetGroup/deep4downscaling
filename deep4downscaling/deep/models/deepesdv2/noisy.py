@@ -117,7 +117,19 @@ class NoisyDeepESDv2(nn.Module):
 
     nerf_num_frequencies : int, optional
         Number of frequency octaves for the NeRF encoding. Only used when
-        ``grid_coords`` is provided. Default is 10.
+        ``grid_coords`` or ``encoder_grid_coords`` is provided. Default is 10.
+
+    encoder_grid_coords : torch.Tensor or None, optional
+        Float tensor of shape ``(num_patches, coord_dim)`` with the spatial
+        coordinates of each encoder patch center. When provided, NeRF
+        positional encoding replaces the learnable encoder position
+        embeddings. When ``None`` (default), learnable embeddings are used.
+
+    share_nerf_encoding : bool, optional
+        If True and both ``grid_coords`` and ``encoder_grid_coords`` are
+        provided, the encoder and decoder share the same
+        ``NeRFPositionalEncoding`` module (including its learnable linear
+        projection). This requires ``dim == query_dim``. Default is False.
 
     members_for_training : int, optional
         Number of ensemble members to generate during training (each with an
@@ -139,6 +151,7 @@ class NoisyDeepESDv2(nn.Module):
                  local_indices=None,
                  decoder_cross_attn_mlp: Optional[bool] = None,
                  grid_coords=None, nerf_num_frequencies=10,
+                 encoder_grid_coords=None, share_nerf_encoding=False,
                  members_for_training=2, num_vars=1,
                  dropout=0., last_relu=False):
         super().__init__()
@@ -159,8 +172,27 @@ class NoisyDeepESDv2(nn.Module):
 
         self.patch_embedding = nn.Conv2d(x_shape[1], dim,
                                          kernel_size=patch_size, stride=patch_size)
-        self.pos_embedding = nn.Parameter(torch.empty(1, self.num_patches, dim))
-        nn.init.trunc_normal_(self.pos_embedding, std=0.02)
+
+        self.share_nerf_encoding = share_nerf_encoding and encoder_grid_coords is not None
+
+        if encoder_grid_coords is not None:
+            if encoder_grid_coords.shape[0] != self.num_patches:
+                raise ValueError('encoder_grid_coords first dim must equal num_patches')
+            self.register_buffer('encoder_grid_coords', encoder_grid_coords)
+            self.pos_embedding = None
+            if self.share_nerf_encoding:
+                if grid_coords is None:
+                    raise ValueError('share_nerf_encoding requires grid_coords (decoder NeRF)')
+                if dim != query_dim:
+                    raise ValueError('share_nerf_encoding requires dim == query_dim')
+            else:
+                self.encoder_pos_encoder = NeRFPositionalEncoding(
+                    encoder_grid_coords.shape[1], nerf_num_frequencies, output_dim=dim)
+        else:
+            self.encoder_grid_coords = None
+            self.pos_embedding = nn.Parameter(torch.empty(1, self.num_patches, dim))
+            nn.init.trunc_normal_(self.pos_embedding, std=0.02)
+
         self.dropout_emb = nn.Dropout(dropout)
 
         self.noise_embedding = NoiseEmbedding(noise_channels, noise_dim)
@@ -236,7 +268,12 @@ class NoisyDeepESDv2(nn.Module):
         """
         tokens = self.patch_embedding(x)
         tokens = tokens.flatten(2).transpose(1, 2)
-        tokens = tokens + self.pos_embedding
+
+        if self.encoder_grid_coords is not None:
+            enc = self.query_encoder if self.share_nerf_encoding else self.encoder_pos_encoder
+            tokens = tokens + enc(self.encoder_grid_coords).unsqueeze(0)
+        else:
+            tokens = tokens + self.pos_embedding
         tokens = self.dropout_emb(tokens)
         for block in self.transformer_blocks:
             tokens = block(tokens, z)
