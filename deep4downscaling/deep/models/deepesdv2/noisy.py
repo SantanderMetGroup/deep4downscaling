@@ -53,6 +53,16 @@ class NoisyDeepESDv2(nn.Module):
     each query attends only to a precomputed subset of K encoder tokens instead
     of all of them, reducing cost from O(N_out * N_enc) to O(N_out * K).
 
+    Static covariables (e.g. orography, land-sea mask) that live on the
+    predictand grid can be injected via ``covariables``.  Each covariable is
+    independently projected to ``covar_embed_dim`` dimensions by a learned
+    linear layer shared across grid points, following the standard approach
+    used in GraphCast (Lam et al., Science 2023) and GenCast (Price et al.,
+    Nature 2024) for static surface features.  The resulting embeddings are
+    concatenated to the decoder queries before the first cross-attention
+    block, so that the cross-attention mechanism can condition on the local
+    surface properties of each output grid point.
+
     Lang, S., Alexe, M., Clare, M. C., Roberts, C., Adewoyin, R., Bouallègue, Z. B., ... & Leutbecher, M. (2024).
     AIFS-CRPS: ensemble forecasting using a model trained with a loss function based on the continuous ranked
     probability score. arXiv preprint arXiv:2412.15832.
@@ -131,6 +141,19 @@ class NoisyDeepESDv2(nn.Module):
         ``NeRFPositionalEncoding`` module (including its learnable linear
         projection). This requires ``dim == query_dim``. Default is False.
 
+    covariables : torch.Tensor or None, optional
+        Float tensor of shape ``(n_out, n_covars)`` with static covariable
+        values for each output grid point (e.g. orography, land-sea mask).
+        Covariables should be pre-normalized to a suitable range (e.g.
+        ``[-1, 1]``) before being passed.  Each covariable column is embedded
+        independently by a learned ``Linear(1, covar_embed_dim)`` layer shared
+        across grid points.  The embeddings are concatenated to the decoder
+        queries.  When ``None`` (default), no covariables are used.
+
+    covar_embed_dim : int, optional
+        Embedding dimension produced by each covariable projection layer.
+        Only used when ``covariables`` is provided. Default is 16.
+
     members_for_training : int, optional
         Number of ensemble members to generate during training (each with an
         independent noise sample). Default is 2.
@@ -152,6 +175,7 @@ class NoisyDeepESDv2(nn.Module):
                  decoder_cross_attn_mlp: Optional[bool] = None,
                  grid_coords=None, nerf_num_frequencies=10,
                  encoder_grid_coords=None, share_nerf_encoding=False,
+                 covariables=None, covar_embed_dim=16,
                  members_for_training=2, num_vars=1,
                  dropout=0., last_relu=False):
         super().__init__()
@@ -227,6 +251,19 @@ class NoisyDeepESDv2(nn.Module):
             nn.init.trunc_normal_(self.query_embedding, std=0.02)
             effective_query_dim = query_dim
 
+        # COVARIABLE EMBEDDINGS
+
+        self.has_covariables = covariables is not None
+        if self.has_covariables:
+            if covariables.shape[0] != n_out:
+                raise ValueError('covariables first dim must equal n_out')
+            self.register_buffer('covariables', covariables)
+            n_covars = covariables.shape[1]
+            self.covar_embeddings = nn.ModuleList([
+                nn.Linear(1, covar_embed_dim) for _ in range(n_covars)
+            ])
+            effective_query_dim += n_covars * covar_embed_dim
+
         if self.use_local_attention:
             DecoderBlock = LocalCrossAttentionDecoderBlock
         else:
@@ -300,6 +337,12 @@ class NoisyDeepESDv2(nn.Module):
         else:
             queries = self.query_encoder(self.grid_coords)         # (N_out, query_dim)
             queries = queries.unsqueeze(0).expand(B, -1, -1)       # (B, N_out, query_dim)
+
+        if self.has_covariables:
+            covar_embs = [fc(self.covariables[:, i:i+1])
+                          for i, fc in enumerate(self.covar_embeddings)]
+            covar_emb = torch.cat(covar_embs, dim=-1).unsqueeze(0).expand(B, -1, -1)
+            queries = torch.cat([queries, covar_emb], dim=-1)
 
         for block in self.decoder_blocks:
             if self.use_local_attention:
