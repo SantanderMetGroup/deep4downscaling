@@ -92,13 +92,18 @@ class NoiseEmbedding(nn.Module):
 class ConditionalLayerNorm(nn.Module):
     """Conditional Layer Normalization."""
 
-    def __init__(self, dim, noise_dim):
+    def __init__(self, dim, noise_dim, zero_init=True):
         super().__init__()
-        self.dim = dim
         self.norm = nn.LayerNorm(dim, elementwise_affine=False)
 
         self.gamma = nn.Linear(noise_dim, dim)
         self.beta = nn.Linear(noise_dim, dim)
+        
+        if zero_init:
+            nn.init.zeros_(self.gamma.weight)
+            nn.init.zeros_(self.gamma.bias)
+            nn.init.zeros_(self.beta.weight)
+            nn.init.zeros_(self.beta.bias)
 
     def forward(self, x, z):
         x_norm = self.norm(x)
