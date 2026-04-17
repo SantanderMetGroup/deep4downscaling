@@ -121,6 +121,13 @@ class MultiHeadCrossAttention(nn.Module):
         self.out_proj = nn.Linear(kv_dim, kv_dim)
         self.dropout = nn.Dropout(dropout)
 
+        # Zero-init the output projection so the cross-attention branch
+        # contributes zero at initialization. Combined with a residual
+        # connection in the surrounding decoder block this yields an
+        # identity-like start (DETR / Perceiver IO)
+        nn.init.zeros_(self.out_proj.weight)
+        nn.init.zeros_(self.out_proj.bias)
+
     def forward(self, q, k, v):
         B, N_q, _ = q.shape
 
@@ -181,6 +188,13 @@ class MultiHeadLocalCrossAttention(nn.Module):
         self.v_proj = nn.Linear(kv_dim, kv_dim)
         self.out_proj = nn.Linear(kv_dim, kv_dim)
         self.dropout = nn.Dropout(dropout)
+
+        # Zero-init the output projection so the cross-attention branch
+        # contributes zero at initialization. Combined with a residual
+        # connection in the surrounding decoder block this yields an
+        # identity-like start (DETR / Perceiver IO).
+        nn.init.zeros_(self.out_proj.weight)
+        nn.init.zeros_(self.out_proj.bias)
 
     def forward(self, q, k, v, attn_mask):
         """
