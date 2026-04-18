@@ -235,6 +235,16 @@ class DeepESDv2(nn.Module):
             ])
             effective_query_dim += n_covars * covar_embed_dim
 
+        # Validate that effective query dimension equals encoder dimension (kv_dim)
+        # This is required for residual connections in the first decoder block.
+        # Without this, query identity is lost at initialization.
+        if effective_query_dim != dim:
+            raise ValueError(f'effective_query_dim ({effective_query_dim}) must equal dim ({dim}) '
+                             f'for cross-attention decoder with residual connections. '
+                             f'Adjust query_dim, covar_embed_dim, or number of covariables. '
+                             f'Query components: query_dim={query_dim}, '
+                             f'covar_embed_dim={covar_embed_dim}, n_covars={n_covars if self.has_covariables else 0}')
+
         if self.use_local_attention:
             DecoderBlock = LocalCrossAttentionDecoderBlock
         else:
