@@ -17,6 +17,7 @@ Authors:
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 import math
 
 from .blocks import NoiseEmbedding, TransformerBlockCLN, CNNBlock
@@ -84,6 +85,13 @@ class NoisyViT(nn.Module):
         is especially noticeable when injecting noise, as this noise is injected independently in
         each patch embedding. (See Notes for more details.)
 
+    decoder_neighborhood : int, optional
+        Radius of the spatial neighborhood used for per-token decoding. Default is 0,
+        which decodes each token independently. When greater than 0, for each token the
+        decoder receives the concatenation of all tokens within a
+        (2 * decoder_neighborhood + 1) x (2 * decoder_neighborhood + 1) spatial window
+        centered on that token. Border tokens are zero-padded.
+
     last_relu : bool, optional
         If True, applies ReLU activation to the final output (only applicable when
         stochastic=False). Default is False.
@@ -101,7 +109,7 @@ class NoisyViT(nn.Module):
                  mlp_dim,  noise_channels, noise_dim,
                  members_for_training=2,
                  dropout=0., orog=None, overlap=0,
-                 last_relu=False):
+                 decoder_neighborhood=0, last_relu=False):
         super(NoisyViT, self).__init__()
 
         if (len(x_shape) != 4) or (len(y_shape) != 2):
@@ -122,6 +130,7 @@ class NoisyViT(nn.Module):
         self.dropout = dropout
         self.orog = orog
         self.overlap = overlap
+        self.decoder_neighborhood = decoder_neighborhood
         self.last_relu = last_relu
 
         # Noise injection parameters
@@ -173,7 +182,8 @@ class NoisyViT(nn.Module):
         self.cnn_block = CNNBlock(dim)
 
         # Per-token linear decoder
-        self.token_decoder = nn.Linear(dim, self.kernel_size**2)
+        decoder_input_dim = dim * (2 * decoder_neighborhood + 1)**2 if decoder_neighborhood > 0 else dim
+        self.token_decoder = nn.Linear(decoder_input_dim, self.kernel_size**2)
 
         # Folding layer
         self.fold = nn.Fold(output_size=(self.H_out, self.W_out),
@@ -253,9 +263,15 @@ class NoisyViT(nn.Module):
             # Pre-decoder CNN block
             x_ = x_.transpose(1, 2).view(B, self.dim, self.H_tokens, self.W_tokens)     
             x_ = self.cnn_block(x_)
-            x_ = x_.view(B, self.dim, self.num_patches).transpose(1, 2)
 
-            # Per-token decoding
+            # Gather token neighborhoods (if applicable) and decode
+            if self.decoder_neighborhood > 0:
+                k = 2 * self.decoder_neighborhood + 1
+                x_ = F.unfold(x_, kernel_size=k, padding=self.decoder_neighborhood)
+                x_ = x_.transpose(1, 2)
+            else:
+                x_ = x_.view(B, self.dim, self.num_patches).transpose(1, 2)
+
             x_ = self.token_decoder(x_)                   
 
             # Overlap-add reconstruction

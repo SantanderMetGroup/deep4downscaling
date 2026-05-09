@@ -10,6 +10,7 @@ Authors:
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 import math
 
 from .blocks import TransformerBlock, CNNBlock
@@ -56,12 +57,20 @@ class ViT(nn.Module):
         as the output data. If provided, the token decoding will be conditioned on the orography
         patches. When passed it must be already a torch.Tensor located in the same device as the model.
 
+    decoder_neighborhood : int, optional
+        Radius of the spatial neighborhood used for per-token decoding. Default is 0,
+        which decodes each token independently. When greater than 0, for each token the
+        decoder receives the concatenation of all tokens within a
+        (2 * decoder_neighborhood + 1) x (2 * decoder_neighborhood + 1) spatial window
+        centered on that token. Border tokens are zero-padded.
+
     last_relu : bool, optional
         If True, applies ReLU activation to the final output.
     """
 
     def __init__(self, x_shape, y_shape, patch_size, dim, depth, num_heads,
-                 mlp_dim, dropout=0., orog=None, last_relu=False):
+                 mlp_dim, dropout=0., orog=None, decoder_neighborhood=0,
+                 last_relu=False):
         super(ViT, self).__init__()
 
         if (len(x_shape) != 4) or (len(y_shape) != 2):
@@ -80,6 +89,7 @@ class ViT(nn.Module):
         self.mlp_dim = mlp_dim
         self.dropout = dropout
         self.orog = orog
+        self.decoder_neighborhood = decoder_neighborhood
         self.last_relu = last_relu
         
         # Coarse grid size (number of tokens in each dimension)
@@ -120,7 +130,8 @@ class ViT(nn.Module):
         self.cnn_block = CNNBlock(dim)
 
         # Per-token linear decoder
-        self.token_decoder = nn.Linear(dim, self.scale**2)
+        decoder_input_dim = dim * (2 * decoder_neighborhood + 1)**2 if decoder_neighborhood > 0 else dim
+        self.token_decoder = nn.Linear(decoder_input_dim, self.scale**2)
 
     def forward(self, x, orography=None):
         B = x.shape[0]
@@ -165,9 +176,15 @@ class ViT(nn.Module):
         # Pre-decoder CNN block
         x = x.transpose(1, 2).view(B, self.dim, self.H_tokens, self.W_tokens)     
         x = self.cnn_block(x)
-        x = x.view(B, self.dim, self.num_patches).transpose(1, 2)
 
-        # Per-token decoding
+        # Gather token neighborhoods (if applicable) and decode
+        if self.decoder_neighborhood > 0:
+            k = 2 * self.decoder_neighborhood + 1
+            x = F.unfold(x, kernel_size=k, padding=self.decoder_neighborhood)
+            x = x.transpose(1, 2)
+        else:
+            x = x.view(B, self.dim, self.num_patches).transpose(1, 2)
+
         x = self.token_decoder(x)               
             
         if self.last_relu:
