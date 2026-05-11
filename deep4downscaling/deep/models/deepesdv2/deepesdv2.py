@@ -162,6 +162,7 @@ class DeepESDv2(nn.Module):
             raise ValueError('Input spatial dimensions must be divisible by patch_size')
 
         self.last_relu = last_relu
+        self.num_vars = num_vars
 
         num_patches = (x_shape[2] // patch_size) * (x_shape[3] // patch_size)
 
@@ -320,5 +321,8 @@ class DeepESDv2(nn.Module):
 
         if self.last_relu:
             out = torch.relu(out)
+
+        if self.num_vars == 1:
+            out = out.squeeze(-1)                          # (B, N_out)
 
         return out

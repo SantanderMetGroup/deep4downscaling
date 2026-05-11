@@ -189,6 +189,7 @@ class NoisyDeepESDv2(nn.Module):
         self.noise_channels = noise_channels
         self.members_for_training = members_for_training
         self.last_relu = last_relu
+        self.num_vars = num_vars
 
         self.num_patches = (x_shape[2] // patch_size) * (x_shape[3] // patch_size)
 
@@ -365,6 +366,9 @@ class NoisyDeepESDv2(nn.Module):
 
         if self.last_relu:
             out = torch.relu(out)
+
+        if self.num_vars == 1:
+            out = out.squeeze(-1)                          # (B, N_out)
 
         return out
 
