@@ -57,7 +57,7 @@ class ViT(nn.Module):
         patches. When passed it must be already a torch.Tensor located in the same device as the model.
 
     last_relu : bool, optional
-        If True, applies ReLU activation to the final output.
+        If True, applies ReLU activation to the final output. Default is False.
     """
 
     def __init__(self, x_shape, y_shape, patch_size, dim, depth, num_heads,
