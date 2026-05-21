@@ -28,6 +28,11 @@ class CRPSLoss(nn.Module):
     beta : int
         Power parameter for the absolute differences in the CRPS computation.
 
+    spread_norm : float, optional
+        Divisor for the spread term (second term). When None (default), the
+        fair-CRPS divisor 2*M*(M-1) is used. Pass a custom value (e.g. 2)
+        to override it.
+
     target : torch.Tensor
         Target/ground-truth data
 
@@ -37,16 +42,18 @@ class CRPSLoss(nn.Module):
         For proper CRPS computation, at least 2 ensemble members are required.
     """
 
-    def __init__(self, ignore_nans: bool, beta: int = 1) -> None:
+    def __init__(self, ignore_nans: bool, beta: int = 1,
+                 spread_norm: float = None) -> None:
         super(CRPSLoss, self).__init__()
         self.ignore_nans = ignore_nans
         self.beta = beta
+        self.spread_norm = spread_norm
 
     def forward(self, target: torch.Tensor, output) -> torch.Tensor:
 
         if isinstance(output, torch.Tensor):
             output = [output]
-        
+
         if self.ignore_nans:
             nans_idx = torch.isnan(target)
             target = target[~nans_idx]
@@ -67,12 +74,18 @@ class CRPSLoss(nn.Module):
             for i in range(M):
                 for j in range(M):
                     second_term += torch.abs(output[i] - output[j]) ** self.beta
-            second_term = second_term / (2*M*(M-1)) # Fair CRPS
+            divisor = self.spread_norm if self.spread_norm is not None else 2*M*(M-1)
+            second_term = second_term / divisor
         else:
             second_term = 0.0
 
         # Final loss
         loss = torch.mean(first_term - second_term)
+
+        self.last_components = {
+            'accuracy': torch.mean(first_term).item(),
+            'spread': torch.mean(second_term).item() if M > 1 else 0.0,
+        }
 
         return loss
 
@@ -107,6 +120,11 @@ class CRPSSpectralLoss(nn.Module):
     lambda_spectral : float
         Weight for the spectral CRPS.
 
+    spread_norm : float, optional
+        Divisor for the spread term (second term) in both the pointwise and
+        spectral CRPS branches. When None (default), the fair-CRPS divisor
+        2*M*(M-1) is used. Pass a custom value (e.g. 2) to override it.
+
     spatial_resolution : float, optional
         Spatial resolution of the predictand grid in km. When provided, a
         low-pass filter is applied in the spectral CRPS branch to remove
@@ -123,9 +141,10 @@ class CRPSSpectralLoss(nn.Module):
     """
 
     def __init__(self, ignore_nans: bool,
-                 H_shape: int, W_shape: int, 
+                 H_shape: int, W_shape: int,
                  beta: int = 1,
                  lambda_spectral: float = 0.1,
+                 spread_norm: float = None,
                  spatial_resolution: float = None) -> None:
         super(CRPSSpectralLoss, self).__init__()
         self.ignore_nans = ignore_nans
@@ -133,12 +152,13 @@ class CRPSSpectralLoss(nn.Module):
         self.W_shape = W_shape
         self.beta = beta
         self.lambda_spectral = lambda_spectral
+        self.spread_norm = spread_norm
         if spatial_resolution is not None and spatial_resolution <= 0:
             raise ValueError("spatial_resolution must be > 0 when provided.")
         self.spatial_resolution = spatial_resolution
 
-    def _CRPS_pointwise(self, target: torch.Tensor,output,
-                        *, filter_nans: bool = False) -> torch.Tensor:
+    def _CRPS_pointwise(self, target: torch.Tensor, output,
+                        *, filter_nans: bool = False):
         if self.ignore_nans and filter_nans:
             nans_idx = torch.isnan(target)
             target = target[~nans_idx]
@@ -159,14 +179,18 @@ class CRPSSpectralLoss(nn.Module):
             for i in range(M):
                 for j in range(M):
                     second_term += torch.abs(output[i] - output[j]) ** self.beta
-            second_term = second_term / (2*M*(M-1)) # Fair CRPS
+            divisor = self.spread_norm if self.spread_norm is not None else 2*M*(M-1)
+            second_term = second_term / divisor
         else:
             second_term = 0.0
 
         # Final loss
         loss = torch.mean(first_term - second_term)
 
-        return loss
+        accuracy = torch.mean(first_term).item()
+        spread = torch.mean(second_term).item() if M > 1 else 0.0
+
+        return loss, accuracy, spread
 
     def _FFT(self, data: torch.Tensor) -> list[torch.Tensor]:
         # Fill nans with 0 for the FFT computation
@@ -205,13 +229,23 @@ class CRPSSpectralLoss(nn.Module):
             output = [output]
 
         # Compute standard CRPS (spectral branch does not filter nans; see _CRPS_pointwise)
-        crps_field = self._CRPS_pointwise(target, output, filter_nans=True)
+        crps_field, field_accuracy, field_spread = self._CRPS_pointwise(
+            target, output, filter_nans=True)
 
         # Compute spectral CRPS
         target_fft = self._FFT(target)[0]
         output_fft = self._FFT(output)
-        crps_spectral = self._CRPS_pointwise(target_fft, output_fft)
+        crps_spectral, spectral_accuracy, spectral_spread = self._CRPS_pointwise(
+            target_fft, output_fft)
 
         # Compute total loss
         loss = crps_field + self.lambda_spectral * crps_spectral
+
+        self.last_components = {
+            'field_accuracy': field_accuracy,
+            'field_spread': field_spread,
+            'spectral_accuracy': spectral_accuracy,
+            'spectral_spread': spectral_spread,
+        }
+
         return loss

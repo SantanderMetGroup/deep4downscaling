@@ -24,6 +24,7 @@ def standard_training_loop(model: torch.nn.Module, model_name: str, model_path: 
                            clip_gradients_norm: float=None,
                            save_checkpoint_every: int=None,
                            resume_checkpoint: str=None,
+                           save_versions_every: int=None,
                            tracker: 'TrainingTracker'=None) -> dict:
     
     """
@@ -97,6 +98,12 @@ def standard_training_loop(model: torch.nn.Module, model_name: str, model_path: 
         training state (model, optimizer, scheduler, scaler, epoch and loss
         history).
 
+    save_versions_every : int, optional
+        Frequency (in epochs) to save a versioned copy of the model weights
+        into {model_path}/{model_name}_versions/. Each copy is named
+        {model_name}_epoch_{epoch}.pt. Only the model weights are saved (not
+        optimizer state). If None, no versioned copies are saved.
+
     tracker : TrainingTracker, optional
         Training tracker instance for logging during training. If not
         provided, no tracking is performed.
@@ -109,6 +116,10 @@ def standard_training_loop(model: torch.nn.Module, model_name: str, model_path: 
     """
 
     model = model.to(device)
+
+    if save_versions_every is not None:
+        versions_dir = os.path.expanduser(f'{model_path}/{model_name}_versions')
+        os.makedirs(versions_dir, exist_ok=True)
 
     # The scaler scales the loss to avoid the underflow
     # of gradients
@@ -123,6 +134,8 @@ def standard_training_loop(model: torch.nn.Module, model_name: str, model_path: 
     # Register the losses per epoch
     epoch_train_loss = []
     epoch_valid_loss = []
+    epoch_train_components = {}
+    epoch_valid_components = {}
 
     start_epoch = 0
 
@@ -139,6 +152,8 @@ def standard_training_loop(model: torch.nn.Module, model_name: str, model_path: 
         start_epoch = checkpoint['epoch'] + 1
         epoch_train_loss = checkpoint.get('train_loss', [])
         epoch_valid_loss = checkpoint.get('valid_loss', [])
+        epoch_train_components = checkpoint.get('train_components', {})
+        epoch_valid_components = checkpoint.get('valid_components', {})
         if patience_early_stopping is not None:
             best_val_loss = checkpoint.get('best_val_loss', math.inf)
         print(f'Resumed from epoch {start_epoch}')
@@ -148,6 +163,7 @@ def standard_training_loop(model: torch.nn.Module, model_name: str, model_path: 
         
         epoch_start = time.time()
         epoch_train_loss.append(0)
+        batch_train_components = {}
 
         # Iterate over batches
         model.train()
@@ -158,7 +174,7 @@ def standard_training_loop(model: torch.nn.Module, model_name: str, model_path: 
 
             optimizer.zero_grad()
 
-            if mixed_precision: 
+            if mixed_precision:
                 with torch.amp.autocast(device_type=device):
                     output = model(x)
                     loss = loss_function(target=y, output=output)
@@ -171,39 +187,50 @@ def standard_training_loop(model: torch.nn.Module, model_name: str, model_path: 
             else:
                 output = model(x)
                 loss = loss_function(target=y, output=output)
-                loss.backward()               
+                loss.backward()
                 if clip_gradients_norm is not None:
                     torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=clip_gradients_norm)
                 optimizer.step()
 
             epoch_train_loss[-1] += loss.item()
+            if hasattr(loss_function, 'last_components'):
+                for k, v in loss_function.last_components.items():
+                    batch_train_components[k] = batch_train_components.get(k, 0.0) + v
 
         # Compute mean loss across the epoch
         epoch_train_loss[-1] = epoch_train_loss[-1] / len(train_data)
+        for k, v in batch_train_components.items():
+            epoch_train_components.setdefault(k, []).append(v / len(train_data))
 
         # If valid data is provided, perform a pass through it
         if valid_data is not None:
 
             epoch_valid_loss.append(0)
+            batch_valid_components = {}
 
             model.eval()
             for x, y in valid_data:
 
                 x = x.to(device)
-                y = y.to(device)    
+                y = y.to(device)
 
-                if mixed_precision: 
+                if mixed_precision:
                     with torch.amp.autocast(device_type=device):
                         output = model(x)
                         loss = loss_function(target=y, output=output)
                 else:
-                        output = model(x)
-                        loss = loss_function(target=y, output=output)                    
+                    output = model(x)
+                    loss = loss_function(target=y, output=output)
 
                 epoch_valid_loss[-1] += loss.item()
+                if hasattr(loss_function, 'last_components'):
+                    for k, v in loss_function.last_components.items():
+                        batch_valid_components[k] = batch_valid_components.get(k, 0.0) + v
 
             # Compute mean loss across the epoch
             epoch_valid_loss[-1] = epoch_valid_loss[-1] / len(valid_data)
+            for k, v in batch_valid_components.items():
+                epoch_valid_components.setdefault(k, []).append(v / len(valid_data))
 
         epoch_end = time.time()
         epoch_time = np.round(epoch_end - epoch_start, 2)
@@ -261,17 +288,27 @@ def standard_training_loop(model: torch.nn.Module, model_name: str, model_path: 
                         'scaler': scaler.state_dict() if mixed_precision else None,
                         'best_val_loss': best_val_loss if patience_early_stopping is not None else None,
                         'train_loss': epoch_train_loss,
-                        'valid_loss': epoch_valid_loss}, ckpt_path)
+                        'valid_loss': epoch_valid_loss,
+                        'train_components': epoch_train_components,
+                        'valid_components': epoch_valid_components}, ckpt_path)
             log_msg = log_msg + ' (Checkpoint saved)'
+
+        # Save versioned copy of model weights
+        if save_versions_every is not None and (epoch + 1) % save_versions_every == 0:
+            version_path = os.path.join(versions_dir, f'{model_name}_epoch_{epoch + 1}.pt')
+            torch.save(model.state_dict(), version_path)
+            log_msg = log_msg + ' (Version saved)'
 
         # Log to tracker
         if tracker is not None and (epoch + 1) % tracker.log_every == 0:
             tracker.log_epoch(epoch=epoch, train_loss=epoch_train_loss,
                               valid_loss=epoch_valid_loss if valid_data is not None else None,
+                              train_loss_components=epoch_train_components or None,
+                              valid_loss_components=epoch_valid_components or None,
                               model=model, train_data=train_data,
                               valid_data=valid_data, device=device,
                               mixed_precision=mixed_precision)
-        
+
         # Print log
         print(log_msg)
 
@@ -410,6 +447,8 @@ def adversarial_training_loop(model: torch.nn.Module, model_name: str, model_pat
     # Register the losses per epoch
     epoch_train_loss = []
     epoch_valid_loss = []
+    epoch_train_components = {}
+    epoch_valid_components = {}
 
     start_epoch = 0
 
@@ -426,16 +465,19 @@ def adversarial_training_loop(model: torch.nn.Module, model_name: str, model_pat
         start_epoch = checkpoint['epoch'] + 1
         epoch_train_loss = checkpoint.get('train_loss', [])
         epoch_valid_loss = checkpoint.get('valid_loss', [])
+        epoch_train_components = checkpoint.get('train_components', {})
+        epoch_valid_components = checkpoint.get('valid_components', {})
         if patience_early_stopping is not None:
             best_val_loss = checkpoint.get('best_val_loss', math.inf)
         print(f'Resumed from epoch {start_epoch}')
-    
+
     # Iterate over epochs
     for epoch in range(start_epoch, num_epochs):
-        
+
         epoch_start = time.time()
         epoch_train_loss.append(0)
-        
+        batch_train_components = {}
+
         # Iterate over batches
         model.train()
         for x, y in train_data:
@@ -857,6 +899,11 @@ def standard_cgan_training_loop(generator: torch.nn.Module,
                 running_adv_loss.append(loss_adv.item())
                 running_recon_loss.append(loss_recon.item())
 
+            # Accumulate loss components (average of original and adversarial passes)
+            if hasattr(loss_function, 'last_components'):
+                for k, v in loss_function.last_components.items():
+                    batch_train_components[k] = batch_train_components.get(k, 0.0) + v
+
         # Compute mean epoch losses
         epoch_G_loss.append(float(np.mean(running_G_loss)))
         epoch_D_loss.append(float(np.mean(running_D_loss)))
@@ -864,11 +911,15 @@ def standard_cgan_training_loop(generator: torch.nn.Module,
         epoch_recon_loss.append(float(np.mean(running_recon_loss)))
         epoch_loss_D_real.append(float(np.mean(running_loss_D_real)))
         epoch_loss_D_fake.append(float(np.mean(running_loss_D_fake)))
+        n_gen_batches = max(len(running_G_loss), 1)
+        for k, v in batch_train_components.items():
+            epoch_train_components.setdefault(k, []).append(v / n_gen_batches)
 
         # Validation (reconstruction only)
         if valid_data is not None:
             generator.eval()
             val_loss = 0.0
+            batch_valid_components = {}
             with torch.no_grad():
                 for Xv, Yv in valid_data:
                     Xv, Yv = Xv.to(device), Yv.to(device)
@@ -879,8 +930,13 @@ def standard_cgan_training_loop(generator: torch.nn.Module,
                     else:
                         Y_pred = generator(Xv)
                         val_loss += recon_criterion(Yv, Y_pred).item()
+                    if hasattr(loss_function, 'last_components'):
+                        for k, v in loss_function.last_components.items():
+                            batch_valid_components[k] = batch_valid_components.get(k, 0.0) + v
             val_loss /= len(valid_data)
             epoch_val_loss.append(val_loss)
+            for k, v in batch_valid_components.items():
+                epoch_valid_components.setdefault(k, []).append(v / len(valid_data))
         else:
             val_loss = None
 
@@ -941,6 +997,8 @@ def standard_cgan_training_loop(generator: torch.nn.Module,
         if tracker is not None and (epoch + 1) % tracker.log_every == 0:
             tracker.log_epoch(epoch=epoch, train_loss=epoch_G_loss,
                               valid_loss=epoch_val_loss if valid_data is not None else None,
+                              train_loss_components=epoch_train_components or None,
+                              valid_loss_components=epoch_valid_components or None,
                               model=generator, train_data=train_data,
                               valid_data=valid_data, device=device,
                               mixed_precision=mixed_precision)
