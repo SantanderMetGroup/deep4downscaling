@@ -184,13 +184,13 @@ class CRPSSpectralLoss(nn.Module):
         elif data[0].ndim == 3:
             data = [member.view(B, M, self.H_shape, self.W_shape) for member in data]
 
-        # Compute FFT (full spectrum for even frequency weighting vs rfft2 half-spectrum)
-        data = [torch.fft.fft2(member) for member in data]
+        # Compute FFT
+        data = [torch.fft.rfft2(member) for member in data]
 
         # Optionally remove frequencies beyond the Nyquist limit
         if self.spatial_resolution is not None:
             k_nyquist = 2.0 * torch.pi / (2.0 * self.spatial_resolution)
-            kx = 2.0 * torch.pi * torch.fft.fftfreq(self.W_shape, d=self.spatial_resolution)
+            kx = 2.0 * torch.pi * torch.fft.rfftfreq(self.W_shape, d=self.spatial_resolution)
             ky = 2.0 * torch.pi * torch.fft.fftfreq(self.H_shape, d=self.spatial_resolution)
             k_radius = torch.sqrt(ky[:, None] ** 2 + kx[None, :] ** 2)
             low_pass_mask = k_radius <= k_nyquist
