@@ -1,4 +1,10 @@
-# deep4downscaling
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/logo-dark.svg" width="450">
+    <source media="(prefers-color-scheme: light)" srcset="docs/logo-light.svg" width="450">
+    <img alt="deep4downscaling logo" src="docs/logo-light.svg" width="450">
+  </picture>
+</p>
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.19355157.svg)](https://doi.org/10.5281/zenodo.19355157)
