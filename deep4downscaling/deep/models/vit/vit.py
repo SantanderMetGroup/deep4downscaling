@@ -65,7 +65,7 @@ class ViT(nn.Module):
         centered on that token. Border tokens are zero-padded.
 
     last_relu : bool, optional
-        If True, applies ReLU activation to the final output.
+        If True, applies ReLU activation to the final output. Default is False.
     """
 
     def __init__(self, x_shape, y_shape, patch_size, dim, depth, num_heads,
