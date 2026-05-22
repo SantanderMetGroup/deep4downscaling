@@ -84,9 +84,13 @@ class NoisyViT(nn.Module):
         is especially noticeable when injecting noise, as this noise is injected independently in
         each patch embedding. (See Notes for more details.)
 
+    noise_mode : str, optional
+        Mode for noise injection. Default is 'patch'. Options:
+        - 'patch': Different noise samples for each patch embedding (spatially varying).
+        - 'global': Same noise sample for all patch embeddings (spatially uniform).
+
     last_relu : bool, optional
-        If True, applies ReLU activation to the final output (only applicable when
-        stochastic=False). Default is False.
+        If True, applies ReLU activation to the final output. Default is False.
 
     Notes
     -----
@@ -101,6 +105,7 @@ class NoisyViT(nn.Module):
                  mlp_dim,  noise_channels, noise_dim,
                  members_for_training=2,
                  dropout=0., orog=None, overlap=0,
+                 noise_mode='patch',
                  last_relu=False):
         super(NoisyViT, self).__init__()
 
@@ -127,6 +132,11 @@ class NoisyViT(nn.Module):
         # Noise injection parameters
         self.noise_channels = noise_channels
         self.noise_dim = noise_dim
+        self.noise_mode = noise_mode
+
+        # Validate noise_mode
+        if self.noise_mode not in ['patch', 'global']:
+            raise ValueError("noise_mode must be either 'patch' or 'global'")
 
         # Coarse grid size (number of tokens in each dimension)
         self.H_tokens = x_shape[2] // patch_size
@@ -209,7 +219,13 @@ class NoisyViT(nn.Module):
         for i in range(members_to_iterate):
 
             # Sample noise
-            z = torch.randn(B, self.num_patches, self.noise_channels, device=x.device)
+            if self.noise_mode == 'patch':
+                # Different noise samples for each patch (spatially varying)
+                z = torch.randn(B, self.num_patches, self.noise_channels, device=x.device)
+            else:
+                # Same noise sample for all patches (spatially uniform)
+                z = torch.randn(B, 1, self.noise_channels, device=x.device)
+                z = z.expand(-1, self.num_patches, -1)
             z = self.noise_embedding(z)
 
             # Patch embedding

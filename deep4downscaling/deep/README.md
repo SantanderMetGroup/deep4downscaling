@@ -10,5 +10,6 @@ This subpackage groups the deep learning components of `deep4downscaling`.
 - `pred.py`: Prediction and inference utilities.
 - `utils.py`: Shared utilities for deep learning workflows.
 - `xai.py`: Explainability methods tailored to downscaling models.
+- `tracker.py`: Utilities for logging and visualizing training progress.
 
 These modules are designed to work together in end-to-end training and projection pipelines.

@@ -23,7 +23,8 @@ def standard_training_loop(model: torch.nn.Module, model_name: str, model_path: 
                            mixed_precision: bool=False,
                            clip_gradients_norm: float=None,
                            save_checkpoint_every: int=None,
-                           resume_checkpoint: str=None) -> dict:
+                           resume_checkpoint: str=None,
+                           tracker: 'TrainingTracker'=None) -> dict:
     
     """
     Standard training loop for a DL model in a supervised setting. Besides the
@@ -95,6 +96,10 @@ def standard_training_loop(model: torch.nn.Module, model_name: str, model_path: 
         Path to a checkpoint file to resume training from. Restores the full
         training state (model, optimizer, scheduler, scaler, epoch and loss
         history).
+
+    tracker : TrainingTracker, optional
+        Training tracker instance for logging during training. If not
+        provided, no tracking is performed.
 
     Returns
     -------
@@ -258,9 +263,21 @@ def standard_training_loop(model: torch.nn.Module, model_name: str, model_path: 
                         'train_loss': epoch_train_loss,
                         'valid_loss': epoch_valid_loss}, ckpt_path)
             log_msg = log_msg + ' (Checkpoint saved)'
+
+        # Log to tracker
+        if tracker is not None and (epoch + 1) % tracker.log_every == 0:
+            tracker.log_epoch(epoch=epoch, train_loss=epoch_train_loss,
+                              valid_loss=epoch_valid_loss if valid_data is not None else None,
+                              model=model, train_data=train_data,
+                              valid_data=valid_data, device=device,
+                              mixed_precision=mixed_precision)
         
         # Print log
         print(log_msg)
+
+    # Finalize tracker
+    if tracker is not None:
+        tracker.finalize()
 
     # Return loss functions
     if valid_data is not None:
@@ -278,7 +295,8 @@ def adversarial_training_loop(model: torch.nn.Module, model_name: str, model_pat
                                mixed_precision: bool=False,
                                epsilon: float=0.01,
                                save_checkpoint_every: int=None,
-                               resume_checkpoint: str=None) -> dict:
+                               resume_checkpoint: str=None,
+                               tracker: 'TrainingTracker'=None) -> dict:
     
     """
     Adversarial training loop for Deep Ensembles using FGSM (Fast Gradient Sign Method).
@@ -359,6 +377,10 @@ def adversarial_training_loop(model: torch.nn.Module, model_name: str, model_pat
         Path to a checkpoint file to resume training from. Restores the full
         training state (model, optimizer, scheduler, scaler, epoch and loss
         history).
+
+    tracker : TrainingTracker, optional
+        Training tracker instance for logging during training. If not
+        provided, no tracking is performed.
     
     Returns
     -------
@@ -586,9 +608,21 @@ def adversarial_training_loop(model: torch.nn.Module, model_name: str, model_pat
                         'train_loss': epoch_train_loss,
                         'valid_loss': epoch_valid_loss}, ckpt_path)
             log_msg = log_msg + ' (Checkpoint saved)'
+
+        # Log to tracker
+        if tracker is not None and (epoch + 1) % tracker.log_every == 0:
+            tracker.log_epoch(epoch=epoch, train_loss=epoch_train_loss,
+                              valid_loss=epoch_valid_loss if valid_data is not None else None,
+                              model=model, train_data=train_data,
+                              valid_data=valid_data, device=device,
+                              mixed_precision=mixed_precision)
         
         # Print log
         print(log_msg)
+
+    # Finalize tracker
+    if tracker is not None:
+        tracker.finalize()
     
     # Return loss functions
     if valid_data is not None:
@@ -616,7 +650,8 @@ def standard_cgan_training_loop(generator: torch.nn.Module,
                                 scheduler: torch.optim.lr_scheduler._LRScheduler=None,
                                 mixed_precision: bool=False,
                                 save_checkpoint_every: int=None,
-                                resume_checkpoint: str=None) -> dict:
+                                resume_checkpoint: str=None,
+                                tracker: 'TrainingTracker'=None) -> dict:
     """
     Adversarial training loop for standard cGANs (BCE-based adversarial loss function) with
     extended control and checkpoint options.
@@ -691,6 +726,10 @@ def standard_cgan_training_loop(generator: torch.nn.Module,
         Path to a checkpoint file to resume training from. Restores the full
         training state (generator, discriminator, optimizers, scheduler,
         scalers, epoch and loss history).
+
+    tracker : TrainingTracker, optional
+        Training tracker instance for logging during training. If not
+        provided, no tracking is performed.
     """
 
     os.makedirs(model_path, exist_ok=True)
@@ -898,7 +937,19 @@ def standard_cgan_training_loop(generator: torch.nn.Module,
                                          'valid': epoch_val_loss}}, ckpt_path)
             log_msg += ' (Checkpoint saved)'
 
+        # Log to tracker
+        if tracker is not None and (epoch + 1) % tracker.log_every == 0:
+            tracker.log_epoch(epoch=epoch, train_loss=epoch_G_loss,
+                              valid_loss=epoch_val_loss if valid_data is not None else None,
+                              model=generator, train_data=train_data,
+                              valid_data=valid_data, device=device,
+                              mixed_precision=mixed_precision)
+
         print(log_msg)
+
+    # Finalize tracker
+    if tracker is not None:
+        tracker.finalize()
 
     # Return losses
     return {"train_G": epoch_G_loss,
