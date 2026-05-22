@@ -1,0 +1,265 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 420 140" width="420" height="140">
+  <defs>
+    <!-- Fade coarse: fades in left→right -->
+    <linearGradient id="fadeCoarse" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%"   stop-color="white" stop-opacity="0.05"/>
+      <stop offset="100%" stop-color="white" stop-opacity="1"/>
+    </linearGradient>
+    <mask id="maskCoarse">
+      <rect x="0" y="0" width="210" height="160" fill="url(#fadeCoarse)"/>
+    </mask>
+
+    <!-- Fade fine: fades out right -->
+    <linearGradient id="fadeFine" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%"   stop-color="white" stop-opacity="1"/>
+      <stop offset="100%" stop-color="white" stop-opacity="0.3"/>
+    </linearGradient>
+    <mask id="maskFine">
+      <rect x="110" y="0" width="210" height="160" fill="url(#fadeFine)"/>
+    </mask>
+
+    <clipPath id="clipCoarse">
+      <rect x="0" y="0" width="108" height="160"/>
+    </clipPath>
+    <clipPath id="clipFine">
+      <rect x="115" y="0" width="98" height="160"/>
+    </clipPath>
+  </defs>
+
+  <!--
+    CONCEPT:
+    - LEFT: 4 coarse grids stacked (offset up-left each time), all fanning from their own VP.
+            Each successive layer is more offset and more faded, evoking multiple input fields.
+    - RIGHT: A single fine-resolution grid, crisp and singular — the one high-res output.
+    - MIDDLE: Arrow/transition connecting many→one.
+
+    Coarse grid VP base: (50, 70). Each layer shifts by (-6, -9).
+    Layers (back to front): offsets (-18,-27), (-12,-18), (-6,-9), (0,0)
+    Opacities: 0.10, 0.20, 0.38, 0.80
+  -->
+
+  <!-- ═══════════════════════════════════════════════════════════ -->
+  <!--  COARSE GRIDS — 4 layers, stacked offset, back to front   -->
+  <!-- ═══════════════════════════════════════════════════════════ -->
+
+  <!-- Helper macro: coarse grid drawn at base coords, group handles offset+opacity -->
+  <!-- VP=(50,70), rails to x=105: y= 28,46,65(→70),84(→89),102(→107) adjusted for center=70 -->
+  <!-- Rails: center=70, spread ±37px at x=105 → slopes ±0.67, ±0.35, 0 -->
+  <!-- Slices at x=62,74,88,105 -->
+
+  <!-- LAYER 4 — deepest ghost -->
+  <g transform="translate(-18,-27)" opacity="0.10">
+    <g clip-path="url(#clipCoarse)" mask="url(#maskCoarse)">
+      <line x1="50" y1="70" x2="105" y2="33"  stroke="#e0e0e0" stroke-width="1.3"/>
+      <line x1="50" y1="70" x2="105" y2="51"  stroke="#e0e0e0" stroke-width="1.3"/>
+      <line x1="50" y1="70" x2="105" y2="70"  stroke="#e0e0e0" stroke-width="1.3"/>
+      <line x1="50" y1="70" x2="105" y2="89"  stroke="#e0e0e0" stroke-width="1.3"/>
+      <line x1="50" y1="70" x2="105" y2="107" stroke="#e0e0e0" stroke-width="1.3"/>
+      <line x1="62"  y1="62" x2="62"  y2="78"  stroke="#e0e0e0" stroke-width="1.3"/>
+      <line x1="74"  y1="54" x2="74"  y2="86"  stroke="#e0e0e0" stroke-width="1.3"/>
+      <line x1="88"  y1="44" x2="88"  y2="96"  stroke="#e0e0e0" stroke-width="1.3"/>
+      <line x1="105" y1="33" x2="105" y2="107" stroke="#e0e0e0" stroke-width="1.3"/>
+    </g>
+  </g>
+
+  <!-- LAYER 3 -->
+  <g transform="translate(-12,-18)" opacity="0.18">
+    <g clip-path="url(#clipCoarse)" mask="url(#maskCoarse)">
+      <line x1="50" y1="70" x2="105" y2="33"  stroke="#e0e0e0" stroke-width="1.3"/>
+      <line x1="50" y1="70" x2="105" y2="51"  stroke="#e0e0e0" stroke-width="1.3"/>
+      <line x1="50" y1="70" x2="105" y2="70"  stroke="#e0e0e0" stroke-width="1.3"/>
+      <line x1="50" y1="70" x2="105" y2="89"  stroke="#e0e0e0" stroke-width="1.3"/>
+      <line x1="50" y1="70" x2="105" y2="107" stroke="#e0e0e0" stroke-width="1.3"/>
+      <line x1="62"  y1="62" x2="62"  y2="78"  stroke="#e0e0e0" stroke-width="1.3"/>
+      <line x1="74"  y1="54" x2="74"  y2="86"  stroke="#e0e0e0" stroke-width="1.3"/>
+      <line x1="88"  y1="44" x2="88"  y2="96"  stroke="#e0e0e0" stroke-width="1.3"/>
+      <line x1="105" y1="33" x2="105" y2="107" stroke="#e0e0e0" stroke-width="1.3"/>
+    </g>
+  </g>
+
+  <!-- LAYER 2 -->
+  <g transform="translate(-6,-9)" opacity="0.35">
+    <g clip-path="url(#clipCoarse)" mask="url(#maskCoarse)">
+      <line x1="50" y1="70" x2="105" y2="33"  stroke="#e0e0e0" stroke-width="1.3"/>
+      <line x1="50" y1="70" x2="105" y2="51"  stroke="#e0e0e0" stroke-width="1.3"/>
+      <line x1="50" y1="70" x2="105" y2="70"  stroke="#e0e0e0" stroke-width="1.3"/>
+      <line x1="50" y1="70" x2="105" y2="89"  stroke="#e0e0e0" stroke-width="1.3"/>
+      <line x1="50" y1="70" x2="105" y2="107" stroke="#e0e0e0" stroke-width="1.3"/>
+      <line x1="62"  y1="62" x2="62"  y2="78"  stroke="#e0e0e0" stroke-width="1.3"/>
+      <line x1="74"  y1="54" x2="74"  y2="86"  stroke="#e0e0e0" stroke-width="1.3"/>
+      <line x1="88"  y1="44" x2="88"  y2="96"  stroke="#e0e0e0" stroke-width="1.3"/>
+      <line x1="105" y1="33" x2="105" y2="107" stroke="#e0e0e0" stroke-width="1.3"/>
+    </g>
+  </g>
+
+  <!-- LAYER 1 — front, full, with intersection dots -->
+  <g transform="translate(0,0)" opacity="0.82">
+    <g clip-path="url(#clipCoarse)" mask="url(#maskCoarse)">
+      <line x1="50" y1="70" x2="105" y2="33"  stroke="#e0e0e0" stroke-width="1.3"/>
+      <line x1="50" y1="70" x2="105" y2="51"  stroke="#e0e0e0" stroke-width="1.3"/>
+      <line x1="50" y1="70" x2="105" y2="70"  stroke="#e0e0e0" stroke-width="1.3"/>
+      <line x1="50" y1="70" x2="105" y2="89"  stroke="#e0e0e0" stroke-width="1.3"/>
+      <line x1="50" y1="70" x2="105" y2="107" stroke="#e0e0e0" stroke-width="1.3"/>
+      <line x1="62"  y1="62" x2="62"  y2="78"  stroke="#e0e0e0" stroke-width="1.3"/>
+      <line x1="74"  y1="54" x2="74"  y2="86"  stroke="#e0e0e0" stroke-width="1.3"/>
+      <line x1="88"  y1="44" x2="88"  y2="96"  stroke="#e0e0e0" stroke-width="1.3"/>
+      <line x1="105" y1="33" x2="105" y2="107" stroke="#e0e0e0" stroke-width="1.3"/>
+      <!-- intersection dots -->
+      <circle cx="62"  cy="62"  r="1.6" fill="#e0e0e0"/>
+      <circle cx="62"  cy="66"  r="1.6" fill="#e0e0e0"/>
+      <circle cx="62"  cy="70"  r="1.6" fill="#e0e0e0"/>
+      <circle cx="62"  cy="74"  r="1.6" fill="#e0e0e0"/>
+      <circle cx="62"  cy="78"  r="1.6" fill="#e0e0e0"/>
+      <circle cx="74"  cy="54"  r="1.6" fill="#e0e0e0"/>
+      <circle cx="74"  cy="62"  r="1.6" fill="#e0e0e0"/>
+      <circle cx="74"  cy="70"  r="1.6" fill="#e0e0e0"/>
+      <circle cx="74"  cy="78"  r="1.6" fill="#e0e0e0"/>
+      <circle cx="74"  cy="86"  r="1.6" fill="#e0e0e0"/>
+      <circle cx="88"  cy="44"  r="1.6" fill="#e0e0e0"/>
+      <circle cx="88"  cy="57"  r="1.6" fill="#e0e0e0"/>
+      <circle cx="88"  cy="70"  r="1.6" fill="#e0e0e0"/>
+      <circle cx="88"  cy="83"  r="1.6" fill="#e0e0e0"/>
+      <circle cx="88"  cy="96"  r="1.6" fill="#e0e0e0"/>
+      <circle cx="105" cy="33"  r="1.6" fill="#e0e0e0"/>
+      <circle cx="105" cy="51"  r="1.6" fill="#e0e0e0"/>
+      <circle cx="105" cy="70"  r="1.6" fill="#e0e0e0"/>
+      <circle cx="105" cy="89"  r="1.6" fill="#e0e0e0"/>
+      <circle cx="105" cy="107" r="1.6" fill="#e0e0e0"/>
+    </g>
+  </g>
+
+  <!-- ═══════════════════════════════════════════════════════════ -->
+  <!--  TRANSITION — converging lines into single arrow          -->
+  <!--  Multiple dashed trails converge from left to arrow tip   -->
+  <!-- ═══════════════════════════════════════════════════════════ -->
+
+  <!-- ── Incoming dashed lines from coarse grid ── -->
+  <line x1="107" y1="52" x2="110" y2="60" stroke="#aaa" stroke-width="0.8" stroke-dasharray="2,2.5" stroke-linecap="round" opacity="0.35"/>
+  <line x1="107" y1="61" x2="110" y2="63" stroke="#aaa" stroke-width="0.8" stroke-dasharray="2,2.5" stroke-linecap="round" opacity="0.50"/>
+  <line x1="107" y1="70" x2="110" y2="70" stroke="#aaa" stroke-width="0.9" stroke-dasharray="2,2"   stroke-linecap="round" opacity="0.65"/>
+  <line x1="107" y1="79" x2="110" y2="77" stroke="#aaa" stroke-width="0.8" stroke-dasharray="2,2.5" stroke-linecap="round" opacity="0.50"/>
+  <line x1="107" y1="88" x2="110" y2="80" stroke="#aaa" stroke-width="0.8" stroke-dasharray="2,2.5" stroke-linecap="round" opacity="0.35"/>
+
+  <!-- ── LATENT VECTOR — transparent grey fill with visible dark border ── -->
+  <rect x="110" y="56" width="6" height="28" rx="1.5" fill="#aaa" fill-opacity="0.25" stroke="#e0e0e0" stroke-width="1" stroke-opacity="0.82"/>
+
+  <!-- ── Single outgoing line to fine grid ── -->
+  <line x1="116" y1="70" x2="130" y2="70" stroke="#aaa" stroke-width="0.9" stroke-dasharray="2,2" stroke-linecap="round" opacity="0.65"/>
+
+  <!-- ═══════════════════════════════════════════════════════════ -->
+  <!--  FINE GRID — single, crisp, no stacking                   -->
+  <!--  VP=(130,70), 7 rails, 7 slices                           -->
+  <!-- ═══════════════════════════════════════════════════════════ -->
+  <g clip-path="url(#clipFine)" mask="url(#maskFine)" opacity="0.82">
+    <!-- Rails from VP=(130,70), spread ±40px at x=210 (dx=80) -->
+    <!-- slopes: ±0.5, ±0.333, ±0.167, 0 -->
+    <line x1="130" y1="70" x2="210" y2="30"  stroke="#e0e0e0" stroke-width="1"/>
+    <line x1="130" y1="70" x2="210" y2="43"  stroke="#e0e0e0" stroke-width="1"/>
+    <line x1="130" y1="70" x2="210" y2="57"  stroke="#e0e0e0" stroke-width="1"/>
+    <line x1="130" y1="70" x2="210" y2="70"  stroke="#e0e0e0" stroke-width="1"/>
+    <line x1="130" y1="70" x2="210" y2="83"  stroke="#e0e0e0" stroke-width="1"/>
+    <line x1="130" y1="70" x2="210" y2="97"  stroke="#e0e0e0" stroke-width="1"/>
+    <line x1="130" y1="70" x2="210" y2="110" stroke="#e0e0e0" stroke-width="1"/>
+
+    <!-- Slices: geometric from VP=130, dx = 15,27,38,48,57,65,73 -->
+    <!-- x=145: span=±7.5  → 62.5–77.5 -->
+    <line x1="145" y1="62" x2="145" y2="78"  stroke="#e0e0e0" stroke-width="1"/>
+    <!-- x=157: span=±13.5 → 56.5–83.5 -->
+    <line x1="157" y1="57" x2="157" y2="83"  stroke="#e0e0e0" stroke-width="1"/>
+    <!-- x=168: span=±19   → 51–89 -->
+    <line x1="168" y1="51" x2="168" y2="89"  stroke="#e0e0e0" stroke-width="1"/>
+    <!-- x=178: span=±24   → 46–94 -->
+    <line x1="178" y1="46" x2="178" y2="94"  stroke="#e0e0e0" stroke-width="1"/>
+    <!-- x=187: span=±28.5 → 41.5–98.5 -->
+    <line x1="187" y1="41" x2="187" y2="99"  stroke="#e0e0e0" stroke-width="1"/>
+    <!-- x=195: span=±32.5 → 37.5–102.5 -->
+    <line x1="195" y1="37" x2="195" y2="103" stroke="#e0e0e0" stroke-width="1"/>
+    <!-- x=203: span=±36.5 → 33.5–106.5 -->
+    <line x1="203" y1="33" x2="203" y2="107" stroke="#e0e0e0" stroke-width="1"/>
+
+    <!-- Intersection dots — rail_y = 70 + slope*(x-130) -->
+    <!-- slopes: -0.5, -0.333, -0.167, 0, +0.167, +0.333, +0.5 -->
+
+    <!-- x=145 (dx=15) -->
+    <circle cx="145" cy="62.5" r="1.2" fill="#e0e0e0"/>
+    <circle cx="145" cy="65"   r="1.2" fill="#e0e0e0"/>
+    <circle cx="145" cy="67.5" r="1.2" fill="#e0e0e0"/>
+    <circle cx="145" cy="70"   r="1.2" fill="#e0e0e0"/>
+    <circle cx="145" cy="72.5" r="1.2" fill="#e0e0e0"/>
+    <circle cx="145" cy="75"   r="1.2" fill="#e0e0e0"/>
+    <circle cx="145" cy="77.5" r="1.2" fill="#e0e0e0"/>
+    <!-- x=157 (dx=27) -->
+    <circle cx="157" cy="57"   r="1.2" fill="#e0e0e0"/>
+    <circle cx="157" cy="61"   r="1.2" fill="#e0e0e0"/>
+    <circle cx="157" cy="65.5" r="1.2" fill="#e0e0e0"/>
+    <circle cx="157" cy="70"   r="1.2" fill="#e0e0e0"/>
+    <circle cx="157" cy="74.5" r="1.2" fill="#e0e0e0"/>
+    <circle cx="157" cy="79"   r="1.2" fill="#e0e0e0"/>
+    <circle cx="157" cy="83"   r="1.2" fill="#e0e0e0"/>
+    <!-- x=168 (dx=38) -->
+    <circle cx="168" cy="51"   r="1.2" fill="#e0e0e0"/>
+    <circle cx="168" cy="57.3" r="1.2" fill="#e0e0e0"/>
+    <circle cx="168" cy="63.7" r="1.2" fill="#e0e0e0"/>
+    <circle cx="168" cy="70"   r="1.2" fill="#e0e0e0"/>
+    <circle cx="168" cy="76.3" r="1.2" fill="#e0e0e0"/>
+    <circle cx="168" cy="82.7" r="1.2" fill="#e0e0e0"/>
+    <circle cx="168" cy="89"   r="1.2" fill="#e0e0e0"/>
+    <!-- x=178 (dx=48) -->
+    <circle cx="178" cy="46"   r="1.2" fill="#e0e0e0"/>
+    <circle cx="178" cy="54"   r="1.2" fill="#e0e0e0"/>
+    <circle cx="178" cy="62"   r="1.2" fill="#e0e0e0"/>
+    <circle cx="178" cy="70"   r="1.2" fill="#e0e0e0"/>
+    <circle cx="178" cy="78"   r="1.2" fill="#e0e0e0"/>
+    <circle cx="178" cy="86"   r="1.2" fill="#e0e0e0"/>
+    <circle cx="178" cy="94"   r="1.2" fill="#e0e0e0"/>
+    <!-- x=187 (dx=57) -->
+    <circle cx="187" cy="41.5" r="1.2" fill="#e0e0e0"/>
+    <circle cx="187" cy="51"   r="1.2" fill="#e0e0e0"/>
+    <circle cx="187" cy="60.5" r="1.2" fill="#e0e0e0"/>
+    <circle cx="187" cy="70"   r="1.2" fill="#e0e0e0"/>
+    <circle cx="187" cy="79.5" r="1.2" fill="#e0e0e0"/>
+    <circle cx="187" cy="89"   r="1.2" fill="#e0e0e0"/>
+    <circle cx="187" cy="98.5" r="1.2" fill="#e0e0e0"/>
+    <!-- x=195 (dx=65) -->
+    <circle cx="195" cy="37.5" r="1.2" fill="#e0e0e0"/>
+    <circle cx="195" cy="48.3" r="1.2" fill="#e0e0e0"/>
+    <circle cx="195" cy="59.2" r="1.2" fill="#e0e0e0"/>
+    <circle cx="195" cy="70"   r="1.2" fill="#e0e0e0"/>
+    <circle cx="195" cy="80.8" r="1.2" fill="#e0e0e0"/>
+    <circle cx="195" cy="91.7" r="1.2" fill="#e0e0e0"/>
+    <circle cx="195" cy="102.5" r="1.2" fill="#e0e0e0"/>
+    <!-- x=203 (dx=73) -->
+    <circle cx="203" cy="33.5"  r="1.2" fill="#e0e0e0"/>
+    <circle cx="203" cy="45.7"  r="1.2" fill="#e0e0e0"/>
+    <circle cx="203" cy="57.8"  r="1.2" fill="#e0e0e0"/>
+    <circle cx="203" cy="70"    r="1.2" fill="#e0e0e0"/>
+    <circle cx="203" cy="82.2"  r="1.2" fill="#e0e0e0"/>
+    <circle cx="203" cy="94.3"  r="1.2" fill="#e0e0e0"/>
+    <circle cx="203" cy="106.5" r="1.2" fill="#e0e0e0"/>
+  </g>
+
+  <!-- ═══════════════════════════════════════════ -->
+  <!--  WORDMARK                                  -->
+  <!-- ═══════════════════════════════════════════ -->
+
+  <line x1="222" y1="35" x2="222" y2="108" stroke="#444444" stroke-width="1"/>
+
+  <!-- "deep4" — first line -->
+  <text
+    font-family="'JetBrains Mono', 'Fira Code', 'Courier New', monospace"
+    letter-spacing="0"
+    y="64"
+  >
+    <tspan x="236" font-weight="700" fill="#D4976A" font-size="22">D</tspan><tspan font-weight="400" fill="#e8e8e8" font-size="18">eep</tspan><tspan font-weight="700" fill="#D4976A" font-size="22">4</tspan>
+  </text>
+
+  <!-- "downscaling" — second line -->
+  <text
+    font-family="'JetBrains Mono', 'Fira Code', 'Courier New', monospace"
+    letter-spacing="0"
+    y="89"
+  >
+    <tspan x="236" font-weight="700" fill="#D4976A" font-size="22">D</tspan><tspan font-weight="400" fill="#e8e8e8" font-size="18">ownscaling</tspan>
+  </text>
+
+</svg>
