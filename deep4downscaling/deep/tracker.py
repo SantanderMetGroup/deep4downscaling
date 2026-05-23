@@ -16,6 +16,13 @@ import torch
 import matplotlib.pyplot as plt
 from matplotlib.ticker import MaxNLocator, FuncFormatter
 
+_SPECTRAL_COMPONENT_DEFS = [
+    ("Field accuracy",    "train_field_accuracy",    "valid_field_accuracy",    "#1f77b4"),
+    ("Field spread",      "train_field_spread",       "valid_field_spread",      "#d62728"),
+    ("Spectral accuracy", "train_spectral_accuracy",  "valid_spectral_accuracy", "#2ca02c"),
+    ("Spectral spread",   "train_spectral_spread",    "valid_spectral_spread",   "#ff7f0e"),
+]
+
 
 class TrainingTracker:
 
@@ -34,7 +41,7 @@ class TrainingTracker:
         generated (e.g., exp_20260508_171000).
 
     log_every : int, optional
-        Frequency (in epochs) to save artifacts. By default set to 1.
+        Frequency (in epochs) to save artifacts. By default set to 5.
 
     num_samples : int, optional
         Number of random samples to track predictions for. By default set
@@ -52,12 +59,21 @@ class TrainingTracker:
     flip_lr : bool, optional
         If True, flip the prediction maps left-to-right before plotting.
         By default False.
+
+    lambda_spectral : float, optional
+        Weighting factor for the spectral loss components. When provided,
+        spectral columns in component_data.csv are multiplied by this value
+        before plotting so all components are on the same scale. A
+        ``loss_components.png`` figure styled after the intercomparison
+        plotting convention is saved alongside the standard
+        ``component_curves.png``.
     """
 
     def __init__(self, experiment_dir: str, experiment_name: str=None,
-                 log_every: int=1, num_samples: int=4,
+                 log_every: int=5, num_samples: int=4,
                  spatial_mask: np.ndarray=None,
-                 flip_ud: bool=False, flip_lr: bool=False) -> None:
+                 flip_ud: bool=False, flip_lr: bool=False,
+                 lambda_spectral: float=None) -> None:
 
         self.experiment_dir = os.path.expanduser(experiment_dir)
         self.log_every = log_every
@@ -65,6 +81,7 @@ class TrainingTracker:
         self.spatial_mask = spatial_mask
         self.flip_ud = flip_ud
         self.flip_lr = flip_lr
+        self.lambda_spectral = lambda_spectral
 
         # Generate experiment name if not provided
         if experiment_name is None:
@@ -148,6 +165,125 @@ class TrainingTracker:
                 f.write('epoch,train_loss\n')
                 for i, tl in enumerate(train_loss):
                     f.write(f'{i+1},{tl}\n')
+
+    def _save_component_curves(self, train_components: dict,
+                               valid_components: dict=None) -> None:
+
+        """
+        Save per-component loss curves as a PNG and CSV. Each component gets
+        its own color; train and validation are distinguished by solid vs.
+        dashed lines.
+
+        Parameters
+        ----------
+        train_components : dict
+            Mapping from component name to list of training values per epoch.
+
+        valid_components : dict, optional
+            Mapping from component name to list of validation values per epoch.
+        """
+
+        if not train_components:
+            return
+
+        component_names = list(train_components.keys())
+        n_epochs = len(next(iter(train_components.values())))
+        epochs = np.arange(1, n_epochs + 1)
+
+        colors = plt.rcParams['axes.prop_cycle'].by_key()['color']
+
+        fig, ax = plt.subplots(figsize=(10, 6))
+
+        for idx, name in enumerate(component_names):
+            color = colors[idx % len(colors)]
+            ax.plot(epochs, train_components[name], label=f'{name} (train)',
+                    color=color, linestyle='-', marker='o', markersize=4)
+            if valid_components is not None and name in valid_components and \
+                    len(valid_components[name]) > 0:
+                ax.plot(epochs, valid_components[name],
+                        label=f'{name} (valid)', color=color, linestyle='--',
+                        marker='o', markersize=4)
+
+        ax.set_xlabel('Epoch')
+        ax.set_ylabel('Loss component value')
+        ax.set_title('Loss Component Curves')
+        ax.xaxis.set_major_locator(MaxNLocator(integer=True))
+        ax.xaxis.set_major_formatter(FuncFormatter(lambda x, _: f'{int(round(x))}'))
+        ax.legend()
+        ax.grid(True, alpha=0.3)
+
+        fig.tight_layout()
+        fig.savefig(os.path.join(self.loss_dir, 'component_curves.png'), dpi=150)
+        plt.close(fig)
+
+        # Save CSV
+        has_valid = valid_components is not None and len(valid_components) > 0
+        csv_path = os.path.join(self.loss_dir, "component_data.csv")
+        with open(csv_path, 'w') as f:
+            train_cols = ','.join(f'train_{n}' for n in component_names)
+            if has_valid:
+                valid_cols = ','.join(f'valid_{n}' for n in component_names)
+                f.write(f'epoch,{train_cols},{valid_cols}\n')
+            else:
+                f.write(f'epoch,{train_cols}\n')
+            for i in range(n_epochs):
+                train_vals = ','.join(
+                    str(train_components[n][i]) for n in component_names)
+                if has_valid:
+                    valid_vals = ','.join(
+                        str(valid_components[n][i]) for n in component_names)
+                    f.write(f'{i+1},{train_vals},{valid_vals}\n')
+                else:
+                    f.write(f'{i+1},{train_vals}\n')
+
+        if self.lambda_spectral is not None:
+            self._save_spectral_loss_curves()
+
+    def _save_spectral_loss_curves(self) -> None:
+
+        """
+        Read component_data.csv, scale spectral columns by lambda_spectral,
+        and save a loss_components.png figure with the same style as the
+        intercomparison plot_run function.
+        """
+
+        import pandas as pd
+
+        csv_path = os.path.join(self.loss_dir, "component_data.csv")
+        df = pd.read_csv(csv_path)
+        lam = self.lambda_spectral
+
+        spectral_cols = [c for c in df.columns if "spectral" in c]
+        for col in spectral_cols:
+            df[col] = df[col] * lam
+
+        fig, ax = plt.subplots(figsize=(10, 6))
+
+        for label, train_col, valid_col, color in _SPECTRAL_COMPONENT_DEFS:
+            scaled_label = (f"{label} × λ={lam}"
+                            if "Spectral" in label else label)
+            if train_col in df.columns:
+                ax.plot(df["epoch"], df[train_col],
+                        label=f"{scaled_label} — train",
+                        color=color, linewidth=1.8)
+            if valid_col in df.columns:
+                ax.plot(df["epoch"], df[valid_col],
+                        label=f"{scaled_label} — valid",
+                        color=color, linewidth=1.8, linestyle="--")
+
+        ax.set_xlabel("Epoch", fontweight="bold")
+        ax.set_ylabel("Loss", fontweight="bold")
+        ax.set_title(
+            f"Loss components — {self.experiment_name}"
+            f"  (spectral × λ={lam})",
+            fontsize=13, fontweight="bold",
+        )
+        ax.legend(fontsize=9, ncol=2)
+        ax.grid(True, alpha=0.3)
+        plt.tight_layout()
+        fig.savefig(os.path.join(self.loss_dir, "loss_components.png"),
+                    dpi=150, bbox_inches="tight")
+        plt.close(fig)
 
     def _reshape_to_2d(self, arr: np.ndarray) -> np.ndarray:
 
@@ -296,6 +432,8 @@ class TrainingTracker:
 
     def log_epoch(self, epoch: int, train_loss: list,
                   valid_loss: list=None,
+                  train_loss_components: dict=None,
+                  valid_loss_components: dict=None,
                   model: torch.nn.Module=None,
                   train_data: torch.utils.data.DataLoader=None,
                   valid_data: torch.utils.data.DataLoader=None,
@@ -318,6 +456,14 @@ class TrainingTracker:
             List of validation loss values up to and including the current
             epoch.
 
+        train_loss_components : dict, optional
+            Mapping from component name to list of training values per epoch.
+            When provided, a component_curves.png plot is saved alongside the
+            main loss_curves.png.
+
+        valid_loss_components : dict, optional
+            Mapping from component name to list of validation values per epoch.
+
         model : torch.nn.Module, optional
             Model to use for generating prediction samples. If not provided,
             prediction samples are not saved.
@@ -338,6 +484,11 @@ class TrainingTracker:
 
         # Save loss curves
         self._save_loss_curves(train_loss, valid_loss)
+
+        # Save component curves if available
+        if train_loss_components:
+            self._save_component_curves(train_loss_components,
+                                        valid_loss_components)
 
         # Save prediction samples
         if model is not None:
