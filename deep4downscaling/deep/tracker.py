@@ -6,7 +6,9 @@ prediction samples at configurable intervals to the local filesystem.
 This module does not work with models trained using loss functions that do not
 return the variable to be predicted (e.g., BernoulliGammaLoss).
 
-Author: Jose González-Abad
+Authors:
+    Jose González-Abad
+    Carlota García Fernández
 """
 
 import os
@@ -16,12 +18,11 @@ import torch
 import matplotlib.pyplot as plt
 from matplotlib.ticker import MaxNLocator, FuncFormatter
 
-_SPECTRAL_COMPONENT_DEFS = [
-    ("Field accuracy",    "train_field_accuracy",    "valid_field_accuracy",    "#1f77b4"),
-    ("Field spread",      "train_field_spread",       "valid_field_spread",      "#d62728"),
-    ("Spectral accuracy", "train_spectral_accuracy",  "valid_spectral_accuracy", "#2ca02c"),
-    ("Spectral spread",   "train_spectral_spread",    "valid_spectral_spread",   "#ff7f0e"),
-]
+# Define component definitions for spectral loss curves
+_SPECTRAL_COMPONENT_DEFS = [("Field accuracy",    "train_field_accuracy",    "valid_field_accuracy",    "#1f77b4"),
+                            ("Field spread",      "train_field_spread",       "valid_field_spread",      "#d62728"),
+                            ("Spectral accuracy", "train_spectral_accuracy",  "valid_spectral_accuracy", "#2ca02c"),
+                            ("Spectral spread",   "train_spectral_spread",    "valid_spectral_spread",   "#ff7f0e")]
 
 
 class TrainingTracker:

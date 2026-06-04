@@ -4,6 +4,7 @@ This module contains the functions for training deep learning models.
 Authors:
     Jose González-Abad
     Alfonso Hernanz
+    Carlota García Fernández
 """
 
 import os
@@ -795,6 +796,8 @@ def standard_cgan_training_loop(generator: torch.nn.Module,
     epoch_G_loss, epoch_D_loss, epoch_val_loss = [], [], []
     epoch_adv_loss, epoch_recon_loss = [], []
     epoch_loss_D_real, epoch_loss_D_fake = [], []
+    epoch_train_components = {}
+    epoch_valid_components = {}
 
     # Resume from checkpoint if provided
     if resume_checkpoint is not None:
@@ -833,6 +836,7 @@ def standard_cgan_training_loop(generator: torch.nn.Module,
         running_G_loss, running_D_loss = [], []
         running_adv_loss, running_recon_loss = [], []
         running_loss_D_real, running_loss_D_fake = [], []
+        batch_train_components = {}
 
         for i, (X, Y_real) in enumerate(train_data):
             X, Y_real = X.to(device), Y_real.to(device)
