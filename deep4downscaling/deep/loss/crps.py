@@ -46,7 +46,7 @@ class CRPSLoss(nn.Module):
 
         if isinstance(output, torch.Tensor):
             output = [output]
-        
+
         if self.ignore_nans:
             nans_idx = torch.isnan(target)
             target = target[~nans_idx]
@@ -73,6 +73,10 @@ class CRPSLoss(nn.Module):
 
         # Final loss
         loss = torch.mean(first_term - second_term)
+
+        # Store last components
+        self.last_components = {'accuracy': torch.mean(first_term).item(),
+                                'spread': torch.mean(second_term).item() if M > 1 else 0.0}
 
         return loss
 
@@ -123,7 +127,7 @@ class CRPSSpectralLoss(nn.Module):
     """
 
     def __init__(self, ignore_nans: bool,
-                 H_shape: int, W_shape: int, 
+                 H_shape: int, W_shape: int,
                  beta: int = 1,
                  lambda_spectral: float = 0.1,
                  spatial_resolution: float = None) -> None:
@@ -137,8 +141,8 @@ class CRPSSpectralLoss(nn.Module):
             raise ValueError("spatial_resolution must be > 0 when provided.")
         self.spatial_resolution = spatial_resolution
 
-    def _CRPS_pointwise(self, target: torch.Tensor,output,
-                        *, filter_nans: bool = False) -> torch.Tensor:
+    def _CRPS_pointwise(self, target: torch.Tensor, output,
+                        *, filter_nans: bool = False):
         if self.ignore_nans and filter_nans:
             nans_idx = torch.isnan(target)
             target = target[~nans_idx]
@@ -166,7 +170,10 @@ class CRPSSpectralLoss(nn.Module):
         # Final loss
         loss = torch.mean(first_term - second_term)
 
-        return loss
+        accuracy = torch.mean(first_term).item()
+        spread = torch.mean(second_term).item() if M > 1 else 0.0
+
+        return loss, accuracy, spread
 
     def _FFT(self, data: torch.Tensor) -> list[torch.Tensor]:
         # Fill nans with 0 for the FFT computation
@@ -205,13 +212,22 @@ class CRPSSpectralLoss(nn.Module):
             output = [output]
 
         # Compute standard CRPS (spectral branch does not filter nans; see _CRPS_pointwise)
-        crps_field = self._CRPS_pointwise(target, output, filter_nans=True)
+        crps_field, field_accuracy, field_spread = self._CRPS_pointwise(
+            target, output, filter_nans=True)
 
         # Compute spectral CRPS
         target_fft = self._FFT(target)[0]
         output_fft = self._FFT(output)
-        crps_spectral = self._CRPS_pointwise(target_fft, output_fft)
+        crps_spectral, spectral_accuracy, spectral_spread = self._CRPS_pointwise(
+            target_fft, output_fft)
 
         # Compute total loss
         loss = crps_field + self.lambda_spectral * crps_spectral
+
+        # Store last components
+        self.last_components = {'field_accuracy': field_accuracy,
+                                'field_spread': field_spread,
+                                'spectral_accuracy': spectral_accuracy,
+                                'spectral_spread': spectral_spread}
+
         return loss
