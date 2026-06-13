@@ -12,13 +12,15 @@ import torch
 import torch.nn as nn
 import math
 
-from .blocks import TransformerBlock, CNNBlock
+from .blocks import TransformerBlock, CNNBlock, PixelShuffleDecoder
 
 class ViT(nn.Module):
     """
     Vision Transformer (ViT) model for statistical downscaling. This model assumes that
     the spatial resolutions of the input and output tensors are powers of 2, and that
     the spatial resolution of the output is a multiple of the spatial resolution of the input.
+    The decoding from tokens to the high-resolution grid is selectable through the decoder
+    argument (see below).
     
     Parameters
     ----------
@@ -56,12 +58,24 @@ class ViT(nn.Module):
         as the output data. If provided, the token decoding will be conditioned on the orography
         patches. When passed it must be already a torch.Tensor located in the same device as the model.
 
+    decoder : str, optional
+        Decoder used to map tokens to the high-resolution grid. Default is 'pixelshuffle'. Options:
+        - 'pixelshuffle': PixelShuffle decoder followed by a convolutional tail operating at high
+          resolution. The convolutions see across patch borders, removing the seams produced by
+          independent per-token decoding. The output is flattened in row-major (lat, lon) order,
+          matching xarray's stack(gridpoint=('lat', 'lon')).
+        - 'linear': per-token linear decoder. Each token is decoded independently into a
+          scale * scale patch, and the patches are concatenated. The output is flattened in
+          (token, intra-patch) order. This is the original decoder and can produce seams at the
+          patch boundaries.
+
     last_relu : bool, optional
         If True, applies ReLU activation to the final output. Default is False.
     """
 
     def __init__(self, x_shape, y_shape, patch_size, dim, depth, num_heads,
-                 mlp_dim, dropout=0., orog=None, last_relu=False):
+                 mlp_dim, dropout=0., orog=None, decoder='pixelshuffle',
+                 last_relu=False):
         super(ViT, self).__init__()
 
         if (len(x_shape) != 4) or (len(y_shape) != 2):
@@ -80,7 +94,12 @@ class ViT(nn.Module):
         self.mlp_dim = mlp_dim
         self.dropout = dropout
         self.orog = orog
+        self.decoder_type = decoder
         self.last_relu = last_relu
+
+        # Validate decoder
+        if self.decoder_type not in ['pixelshuffle', 'linear']:
+            raise ValueError("decoder must be either 'pixelshuffle' or 'linear'")
         
         # Coarse grid size (number of tokens in each dimension)
         self.H_tokens = x_shape[2] // patch_size
@@ -119,8 +138,13 @@ class ViT(nn.Module):
         # Pre-decoder CNN blocks
         self.cnn_block = CNNBlock(dim)
 
-        # Per-token linear decoder
-        self.token_decoder = nn.Linear(dim, self.scale**2)
+        # Decoder
+        if self.decoder_type == 'pixelshuffle':
+            # PixelShuffle decoder with convolutional tail at high resolution
+            self.decoder = PixelShuffleDecoder(dim, self.scale)
+        else:
+            # Per-token linear decoder
+            self.token_decoder = nn.Linear(dim, self.scale**2)
 
     def forward(self, x, orography=None):
         B = x.shape[0]
@@ -165,11 +189,16 @@ class ViT(nn.Module):
         # Pre-decoder CNN block
         x = x.transpose(1, 2).view(B, self.dim, self.H_tokens, self.W_tokens)     
         x = self.cnn_block(x)
-        x = x.view(B, self.dim, self.num_patches).transpose(1, 2)
 
-        # Per-token decoding
-        x = self.token_decoder(x)               
-            
+        # Decoding to the high-resolution grid
+        if self.decoder_type == 'pixelshuffle':
+            # PixelShuffle decoding: (B, 1, H_out, W_out)
+            x = self.decoder(x)
+        else:
+            # Per-token linear decoding
+            x = x.view(B, self.dim, self.num_patches).transpose(1, 2)
+            x = self.token_decoder(x)
+
         if self.last_relu:
             x = torch.relu(x)
         

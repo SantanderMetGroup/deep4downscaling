@@ -19,7 +19,7 @@ import torch
 import torch.nn as nn
 import math
 
-from .blocks import NoiseEmbedding, TransformerBlockCLN, CNNBlock
+from .blocks import NoiseEmbedding, TransformerBlockCLN, CNNBlock, PixelShuffleDecoder
 
 class NoisyViT(nn.Module):
     """
@@ -27,7 +27,8 @@ class NoisyViT(nn.Module):
     the spatial resolutions of the input and output tensors are powers of 2, and that
     the spatial resolution of the output is a multiple of the spatial resolution of the input.
     The model injects noise into the encoder to generate stochastic outputs following the
-    implementation in Lang et al. (2024).
+    implementation in Lang et al. (2024). The decoding from tokens to the high-resolution grid
+    is selectable through the decoder argument (see below).
 
     Lang, S., Alexe, M., Clare, M. C., Roberts, C., Adewoyin, R., Bouallègue, Z. B., ... & Leutbecher, M. (2024).
     AIFS-CRPS: ensemble forecasting using a model trained with a loss function based on the continuous ranked
@@ -78,11 +79,22 @@ class NoisyViT(nn.Module):
         as the output data. If provided, the token decoding will be conditioned on the orography
         patches. When passed it must be already a torch.Tensor located in the same device as the model.
 
+    decoder : str, optional
+        Decoder used to map tokens to the high-resolution grid. Default is 'pixelshuffle'. Options:
+        - 'pixelshuffle': PixelShuffle decoder followed by a convolutional tail operating at high
+          resolution. The convolutions see across patch borders, removing the seams produced by
+          independent per-token decoding. The output is flattened in row-major (lat, lon) order,
+          matching xarray's stack(gridpoint=('lat', 'lon')). The overlap argument is ignored.
+        - 'linear': per-token linear decoder with overlap-add reconstruction. Each token is decoded
+          independently into a (scale + 2 * overlap) ** 2 patch, and the patches are folded back
+          with overlap-add. The output is flattened in (token, intra-patch) order. This is the
+          original decoder and can produce seams at the patch boundaries.
+
     overlap : int, optional
-        Overlap between patches. Default is 0. This is used to create a smooth transition
-        between patches, thus avoiding artifacts at the boundaries of the patches. This issue
-        is especially noticeable when injecting noise, as this noise is injected independently in
-        each patch embedding. (See Notes for more details.)
+        Overlap between patches. Default is 0. Only used when decoder is 'linear'. This is used to
+        create a smooth transition between patches, thus avoiding artifacts at the boundaries of the
+        patches. This issue is especially noticeable when injecting noise, as this noise is injected
+        independently in each patch embedding. (See Notes for more details.)
 
     noise_mode : str, optional
         Mode for noise injection. Default is 'patch'. Options:
@@ -94,7 +106,7 @@ class NoisyViT(nn.Module):
 
     Notes
     -----
-    Overlap-Add Reconstruction (only applicable when overlap > 0):
+    Overlap-Add Reconstruction (only applicable when decoder is 'linear' and overlap > 0):
     1. Each token decodes to enlarged (scale + 2 * overlap)**2 patches
     2. Hann window applied: strong at center, fades to zero at edges
     3. Patches placed with stride=scale, overlapping regions are summed
@@ -104,7 +116,7 @@ class NoisyViT(nn.Module):
     def __init__(self, x_shape, y_shape, patch_size, dim, depth, num_heads,
                  mlp_dim,  noise_channels, noise_dim,
                  members_for_training=2,
-                 dropout=0., orog=None, overlap=0,
+                 dropout=0., orog=None, decoder='pixelshuffle', overlap=0,
                  noise_mode='patch',
                  last_relu=False):
         super(NoisyViT, self).__init__()
@@ -126,6 +138,7 @@ class NoisyViT(nn.Module):
         self.members_for_training = members_for_training
         self.dropout = dropout
         self.orog = orog
+        self.decoder_type = decoder
         self.overlap = overlap
         self.last_relu = last_relu
 
@@ -133,6 +146,10 @@ class NoisyViT(nn.Module):
         self.noise_channels = noise_channels
         self.noise_dim = noise_dim
         self.noise_mode = noise_mode
+
+        # Validate decoder
+        if self.decoder_type not in ['pixelshuffle', 'linear']:
+            raise ValueError("decoder must be either 'pixelshuffle' or 'linear'")
 
         # Validate noise_mode
         if self.noise_mode not in ['patch', 'global']:
@@ -152,9 +169,6 @@ class NoisyViT(nn.Module):
 
         if self.scale * self.H_tokens != self.H_out:
             raise ValueError("Output resolution must be divisible by input resolution")
-
-        # Overlap-add reconstruction parameters
-        self.kernel_size = self.scale + 2 * self.overlap
 
         # Orography patch embedding
         if self.orog is not None:
@@ -182,26 +196,34 @@ class NoisyViT(nn.Module):
         # Pre-decoder CNN blocks
         self.cnn_block = CNNBlock(dim)
 
-        # Per-token linear decoder
-        self.token_decoder = nn.Linear(dim, self.kernel_size**2)
-
-        # Folding layer
-        self.fold = nn.Fold(output_size=(self.H_out, self.W_out),
-                            kernel_size=self.kernel_size,
-                            padding=self.overlap,
-                            stride=self.scale)
-
-        # Windowing and normalization mask
-        if self.overlap > 0:
-            window = torch.hann_window(self.kernel_size, periodic=False)
-            window = window.unsqueeze(0) * window.unsqueeze(1)
-            self.register_buffer('window', window.view(-1, 1))
+        # Decoder
+        if self.decoder_type == 'pixelshuffle':
+            # PixelShuffle decoder with convolutional tail at high resolution
+            self.decoder = PixelShuffleDecoder(dim, self.scale)
         else:
-            self.register_buffer('window', torch.ones(self.kernel_size**2, 1))
+            # Overlap-add reconstruction parameters
+            self.kernel_size = self.scale + 2 * self.overlap
 
-        # Pre-compute normalization mask to handle overlapping regions
-        ones = torch.ones(1, 1, self.num_patches)
-        self.register_buffer('norm_mask', self.fold(self.window * ones))
+            # Per-token linear decoder
+            self.token_decoder = nn.Linear(dim, self.kernel_size**2)
+
+            # Folding layer
+            self.fold = nn.Fold(output_size=(self.H_out, self.W_out),
+                                kernel_size=self.kernel_size,
+                                padding=self.overlap,
+                                stride=self.scale)
+
+            # Windowing and normalization mask
+            if self.overlap > 0:
+                window = torch.hann_window(self.kernel_size, periodic=False)
+                window = window.unsqueeze(0) * window.unsqueeze(1)
+                self.register_buffer('window', window.view(-1, 1))
+            else:
+                self.register_buffer('window', torch.ones(self.kernel_size**2, 1))
+
+            # Pre-compute normalization mask to handle overlapping regions
+            ones = torch.ones(1, 1, self.num_patches)
+            self.register_buffer('norm_mask', self.fold(self.window * ones))
 
     def forward(self, x, orography=None):
         B = x.shape[0]
@@ -269,16 +291,21 @@ class NoisyViT(nn.Module):
             # Pre-decoder CNN block
             x_ = x_.transpose(1, 2).view(B, self.dim, self.H_tokens, self.W_tokens)     
             x_ = self.cnn_block(x_)
-            x_ = x_.view(B, self.dim, self.num_patches).transpose(1, 2)
 
-            # Per-token decoding
-            x_ = self.token_decoder(x_)                   
+            # Decoding to the high-resolution grid
+            if self.decoder_type == 'pixelshuffle':
+                # PixelShuffle decoding: (B, 1, H_out, W_out)
+                x_ = self.decoder(x_)
+            else:
+                # Per-token linear decoding
+                x_ = x_.view(B, self.dim, self.num_patches).transpose(1, 2)
+                x_ = self.token_decoder(x_)
 
-            # Overlap-add reconstruction
-            x_ = x_.transpose(1, 2)                       
-            x_ = x_ * self.window                         
-            x_ = self.fold(x_)                          
-            x_ = x_ / self.norm_mask.clamp(min=1e-8)  
+                # Overlap-add reconstruction
+                x_ = x_.transpose(1, 2)                       
+                x_ = x_ * self.window                         
+                x_ = self.fold(x_)                          
+                x_ = x_ / self.norm_mask.clamp(min=1e-8)  
 
             if self.last_relu:
                 x_ = torch.relu(x_)

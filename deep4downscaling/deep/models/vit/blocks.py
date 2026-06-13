@@ -144,3 +144,49 @@ class CNNBlock(nn.Module):
 
     def forward(self, x):
         return x + self.block(x)
+
+class PixelShuffleDecoder(nn.Module):
+    """PixelShuffle decoder with a convolutional tail at high resolution (ESPCN/EDSR-style).
+
+       The token grid (B, dim, H_tokens, W_tokens) is progressively upsampled by factors
+       of 2 (Conv2d, PixelShuffle, GELU) up to the high-resolution grid, and then refined
+       with plain 3x3 convolutions operating at full resolution. The number of channels is
+       halved at each upsampling stage (with a floor of 32) to keep the computation at high
+       resolution tractable. The convolutions preceding each PixelShuffle are initialized with
+       ICNR (Aitken et al., 2017) to suppress checkerboard artifacts."""
+
+    def __init__(self, dim, scale):
+        super().__init__()
+
+        if scale < 1 or (scale & (scale - 1)) != 0:
+            raise ValueError('scale must be a power of 2')
+
+        # Progressive x2 upsampling stages
+        upsampling = []
+        channels = dim
+        for _ in range(int(math.log2(scale))):
+            out_channels = max(channels // 2, 32)
+            conv = nn.Conv2d(channels, out_channels * 4, kernel_size=3, padding=1)
+            self._icnr_init(conv.weight, upscale_factor=2)
+            upsampling.extend([conv, nn.PixelShuffle(2), nn.GELU()])
+            channels = out_channels
+        self.upsampling = nn.Sequential(*upsampling)
+
+        # Convolutional tail at high resolution
+        self.tail = nn.Sequential(nn.Conv2d(channels, channels, kernel_size=3, padding=1),
+                                  nn.GELU(),
+                                  nn.Conv2d(channels, 1, kernel_size=3, padding=1))
+
+    @staticmethod
+    def _icnr_init(weight, upscale_factor):
+        """ICNR initialization (Aitken et al., 2017). Makes the Conv2d + PixelShuffle pair
+           equivalent to nearest-neighbour upsampling at initialization."""
+        out_channels, in_channels, h, w = weight.shape
+        sub_kernel = torch.empty(out_channels // upscale_factor**2, in_channels, h, w)
+        nn.init.kaiming_normal_(sub_kernel)
+        with torch.no_grad():
+            weight.copy_(sub_kernel.repeat_interleave(upscale_factor**2, dim=0))
+
+    def forward(self, x):
+        x = self.upsampling(x)
+        return self.tail(x)
