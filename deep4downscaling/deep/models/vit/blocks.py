@@ -11,7 +11,6 @@ Authors:
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-import numpy as np
 import math
 
 class MultiHeadAttention(nn.Module):
@@ -27,27 +26,19 @@ class MultiHeadAttention(nn.Module):
 
         self.qkv_proj = nn.Linear(dim, 3 * dim)
         self.out_proj = nn.Linear(dim, dim)
-        self.dropout = nn.Dropout(dropout)
+        self.attn_dropout = dropout
 
     def forward(self, x):
         batch_size, seq_len, dim = x.shape
 
-        # Generate Q, K, V
         qkv = self.qkv_proj(x)
         qkv = qkv.reshape(batch_size, seq_len, 3, self.num_heads, self.head_dim)
         qkv = qkv.permute(2, 0, 3, 1, 4)  # (3, batch, heads, seq, head_dim)
         q, k, v = qkv[0], qkv[1], qkv[2]
 
-        # Attention computation
-        scale = math.sqrt(self.head_dim)
-        attn_weights = torch.matmul(q, k.transpose(-2, -1)) / scale
-        attn_weights = F.softmax(attn_weights, dim=-1)
-        attn_weights = self.dropout(attn_weights)
+        attn_output = F.scaled_dot_product_attention(q, k, v,
+                                                     dropout_p=self.attn_dropout if self.training else 0.0)
 
-        # Apply attention to values
-        attn_output = torch.matmul(attn_weights, v)
-
-        # Reshape and project
         attn_output = attn_output.transpose(1, 2).contiguous()
         attn_output = attn_output.view(batch_size, seq_len, dim)
         output = self.out_proj(attn_output)

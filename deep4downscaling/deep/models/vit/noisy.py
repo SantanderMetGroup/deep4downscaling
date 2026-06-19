@@ -28,7 +28,7 @@ class NoisyViT(nn.Module):
     the spatial resolution of the output is a multiple of the spatial resolution of the input.
     The model injects noise into the encoder to generate stochastic outputs following the
     implementation in Lang et al. (2024). The decoding from tokens to the high-resolution grid
-    is selectable through the decoder argument (see below).
+    is selectable through the decoder argument.
 
     Lang, S., Alexe, M., Clare, M. C., Roberts, C., Adewoyin, R., Bouallègue, Z. B., ... & Leutbecher, M. (2024).
     AIFS-CRPS: ensemble forecasting using a model trained with a loss function based on the continuous ranked
@@ -84,17 +84,11 @@ class NoisyViT(nn.Module):
         - 'pixelshuffle': PixelShuffle decoder followed by a convolutional tail operating at high
           resolution. The convolutions see across patch borders, removing the seams produced by
           independent per-token decoding. The output is flattened in row-major (lat, lon) order,
-          matching xarray's stack(gridpoint=('lat', 'lon')). The overlap argument is ignored.
-        - 'linear': per-token linear decoder with overlap-add reconstruction. Each token is decoded
-          independently into a (scale + 2 * overlap) ** 2 patch, and the patches are folded back
-          with overlap-add. The output is flattened in (token, intra-patch) order. This is the
-          original decoder and can produce seams at the patch boundaries.
-
-    overlap : int, optional
-        Overlap between patches. Default is 0. Only used when decoder is 'linear'. This is used to
-        create a smooth transition between patches, thus avoiding artifacts at the boundaries of the
-        patches. This issue is especially noticeable when injecting noise, as this noise is injected
-        independently in each patch embedding. (See Notes for more details.)
+          matching xarray's stack(gridpoint=('lat', 'lon')).
+        - 'linear': per-token linear decoder. Each token is decoded independently into a
+          scale ** 2 patch, and the patches are folded back into the high-resolution grid. The
+          output is flattened in (token, intra-patch) order. This is the original decoder and can
+          produce seams at the patch boundaries.
 
     noise_mode : str, optional
         Mode for noise injection. Default is 'patch'. Options:
@@ -108,20 +102,12 @@ class NoisyViT(nn.Module):
 
     last_relu : bool, optional
         If True, applies ReLU activation to the final output. Default is False.
-
-    Notes
-    -----
-    Overlap-Add Reconstruction (only applicable when decoder is 'linear' and overlap > 0):
-    1. Each token decodes to enlarged (scale + 2 * overlap)**2 patches
-    2. Hann window applied: strong at center, fades to zero at edges
-    3. Patches placed with stride=scale, overlapping regions are summed
-    4. Normalization divides by accumulated weights to get proper average
     """
 
     def __init__(self, x_shape, y_shape, patch_size, dim, depth, num_heads,
                  mlp_dim,  noise_channels, noise_dim,
                  members_for_training=2,
-                 dropout=0., orog=None, decoder='pixelshuffle', overlap=0,
+                 dropout=0., orog=None, decoder='pixelshuffle',
                  noise_mode='patch',
                  num_vars=1,
                  last_relu=False):
@@ -153,7 +139,6 @@ class NoisyViT(nn.Module):
         self.dropout = dropout
         self.orog = orog
         self.decoder_type = decoder
-        self.overlap = overlap
         self.num_vars = num_vars
         self.last_relu = last_relu
 
@@ -215,8 +200,7 @@ class NoisyViT(nn.Module):
         if self.decoder_type == 'pixelshuffle':
             self.decoder = PixelShuffleDecoder(dim, self.scale, out_channels=self.num_vars)
         else:
-            # Overlap-add reconstruction parameters
-            self.kernel_size = self.scale + 2 * self.overlap
+            self.kernel_size = self.scale
 
             # Per-token linear decoder (outputs num_vars * kernel_size**2 per token)
             self.token_decoder = nn.Linear(dim, self.num_vars * self.kernel_size**2)
@@ -224,21 +208,7 @@ class NoisyViT(nn.Module):
             # Folding layer (folds num_vars * kernel_size**2 channels)
             self.fold = nn.Fold(output_size=(self.H_out, self.W_out),
                                 kernel_size=self.kernel_size,
-                                padding=self.overlap,
                                 stride=self.scale)
-
-            # Windowing: tile the 2D window across num_vars channels
-            if self.overlap > 0:
-                window = torch.hann_window(self.kernel_size, periodic=False)
-                window = window.unsqueeze(0) * window.unsqueeze(1)
-                window_1var = window.view(-1, 1)
-            else:
-                window_1var = torch.ones(self.kernel_size**2, 1)
-            self.register_buffer('window', window_1var.repeat(self.num_vars, 1))
-
-            # Pre-compute normalization mask (broadcasts over the variable channel)
-            ones = torch.ones(1, self.kernel_size**2, self.num_patches)
-            self.register_buffer('norm_mask', self.fold(window_1var * ones))
 
     def forward(self, x, orography=None):
         B = x.shape[0]
@@ -301,14 +271,11 @@ class NoisyViT(nn.Module):
                 x_ = x_.view(B, self.dim, self.num_patches).transpose(1, 2)
                 x_ = self.token_decoder(x_)
 
-                # Overlap-add reconstruction per variable
+                # Fold patches back into the high-resolution grid, per variable
                 # (B, num_patches, num_vars * K**2) -> (B, num_vars * K**2, num_patches)
                 x_ = x_.transpose(1, 2)
-                x_ = x_ * self.window
-                # Fold each variable independently
                 x_ = x_.reshape(B * self.num_vars, self.kernel_size**2, self.num_patches)
                 x_ = self.fold(x_)
-                x_ = x_ / self.norm_mask.clamp(min=1e-8)
                 x_ = x_.view(B, self.num_vars, self.H_out, self.W_out)
 
             if self.last_relu:

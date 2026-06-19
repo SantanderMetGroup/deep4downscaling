@@ -70,9 +70,9 @@ def align_datasets(data_1: xr.Dataset, data_2: xr.Dataset, coord: str) -> (xr.Da
         Aligned Datasets      
     """
 
-    data_1 = data_1.sel(time=np.in1d(data_1[coord].values,
+    data_1 = data_1.sel(time=np.isin(data_1[coord].values,
                                      data_2[coord].values))
-    data_2 = data_2.sel(time=np.in1d(data_2[coord].values,
+    data_2 = data_2.sel(time=np.isin(data_2[coord].values,
                                      data_1[coord].values))
 
     return data_1, data_2
