@@ -41,9 +41,9 @@ class NoisyViT(nn.Module):
         The spatial resolution must be a power of 2.
 
     y_shape : tuple
-        Shape of the output data. Must have dimension 2 (batch, num_outputs).
-        The spatial resolution must both a power of 2 and a multiple of the
-        spatial resolution of the input.
+        Shape of the output data. Either 2D (batch, gridpoints) for univariate or
+        3D (batch, num_vars, gridpoints) for multivariate. The spatial resolution must
+        be both a power of 2 and a multiple of the spatial resolution of the input.
 
     patch_size : int
         Size of the patches to extract from the input image for building the token embeddings.
@@ -101,6 +101,11 @@ class NoisyViT(nn.Module):
         - 'patch': Different noise samples for each patch embedding (spatially varying).
         - 'global': Same noise sample for all patch embeddings (spatially uniform).
 
+    num_vars : int, optional
+        Number of output variables. Default is 1 (univariate, backward compatible).
+        When > 1, the model outputs (B, num_vars, gridpoints). Can also be inferred
+        from a 3D y_shape.
+
     last_relu : bool, optional
         If True, applies ReLU activation to the final output. Default is False.
 
@@ -118,11 +123,20 @@ class NoisyViT(nn.Module):
                  members_for_training=2,
                  dropout=0., orog=None, decoder='pixelshuffle', overlap=0,
                  noise_mode='patch',
+                 num_vars=1,
                  last_relu=False):
         super(NoisyViT, self).__init__()
 
-        if (len(x_shape) != 4) or (len(y_shape) != 2):
-            raise ValueError('X must be 4D (B, C, H, W) and Y must be 2D (B, N_outputs)')
+        if len(x_shape) != 4:
+            raise ValueError('X must be 4D (B, C, H, W)')
+
+        if len(y_shape) == 2:
+            gridpoints = y_shape[1]
+        elif len(y_shape) == 3:
+            num_vars = y_shape[1]
+            gridpoints = y_shape[2]
+        else:
+            raise ValueError('Y must be 2D (B, gridpoints) or 3D (B, num_vars, gridpoints)')
 
         if x_shape[2] % patch_size != 0 or x_shape[3] % patch_size != 0:
             raise ValueError('Image dimensions must be divisible by patch_size')
@@ -140,6 +154,7 @@ class NoisyViT(nn.Module):
         self.orog = orog
         self.decoder_type = decoder
         self.overlap = overlap
+        self.num_vars = num_vars
         self.last_relu = last_relu
 
         # Noise injection parameters
@@ -161,7 +176,7 @@ class NoisyViT(nn.Module):
         self.num_patches = self.H_tokens * self.W_tokens
 
         # Target high-resolution size
-        self.H_out = int(math.sqrt(y_shape[1]))
+        self.H_out = int(math.sqrt(gridpoints))
         self.W_out = self.H_out
 
         # Upscaling factor
@@ -198,32 +213,32 @@ class NoisyViT(nn.Module):
 
         # Decoder
         if self.decoder_type == 'pixelshuffle':
-            # PixelShuffle decoder with convolutional tail at high resolution
-            self.decoder = PixelShuffleDecoder(dim, self.scale)
+            self.decoder = PixelShuffleDecoder(dim, self.scale, out_channels=self.num_vars)
         else:
             # Overlap-add reconstruction parameters
             self.kernel_size = self.scale + 2 * self.overlap
 
-            # Per-token linear decoder
-            self.token_decoder = nn.Linear(dim, self.kernel_size**2)
+            # Per-token linear decoder (outputs num_vars * kernel_size**2 per token)
+            self.token_decoder = nn.Linear(dim, self.num_vars * self.kernel_size**2)
 
-            # Folding layer
+            # Folding layer (folds num_vars * kernel_size**2 channels)
             self.fold = nn.Fold(output_size=(self.H_out, self.W_out),
                                 kernel_size=self.kernel_size,
                                 padding=self.overlap,
                                 stride=self.scale)
 
-            # Windowing and normalization mask
+            # Windowing: tile the 2D window across num_vars channels
             if self.overlap > 0:
                 window = torch.hann_window(self.kernel_size, periodic=False)
                 window = window.unsqueeze(0) * window.unsqueeze(1)
-                self.register_buffer('window', window.view(-1, 1))
+                window_1var = window.view(-1, 1)
             else:
-                self.register_buffer('window', torch.ones(self.kernel_size**2, 1))
+                window_1var = torch.ones(self.kernel_size**2, 1)
+            self.register_buffer('window', window_1var.repeat(self.num_vars, 1))
 
-            # Pre-compute normalization mask to handle overlapping regions
-            ones = torch.ones(1, 1, self.num_patches)
-            self.register_buffer('norm_mask', self.fold(self.window * ones))
+            # Pre-compute normalization mask (broadcasts over the variable channel)
+            ones = torch.ones(1, self.kernel_size**2, self.num_patches)
+            self.register_buffer('norm_mask', self.fold(window_1var * ones))
 
     def forward(self, x, orography=None):
         B = x.shape[0]
@@ -242,10 +257,8 @@ class NoisyViT(nn.Module):
 
             # Sample noise
             if self.noise_mode == 'patch':
-                # Different noise samples for each patch (spatially varying)
                 z = torch.randn(B, self.num_patches, self.noise_channels, device=x.device)
             else:
-                # Same noise sample for all patches (spatially uniform)
                 z = torch.randn(B, 1, self.noise_channels, device=x.device)
                 z = z.expand(-1, self.num_patches, -1)
             z = self.noise_embedding(z)
@@ -265,27 +278,14 @@ class NoisyViT(nn.Module):
 
             # Orography conditioning 
             if self.orog is not None:
-                # Replicate across batch dimension
                 orog = self.orog.repeat(B, 1, 1)
-
-                # (B, H_out, W_out) -> (B, H_tokens, scale, W_tokens, scale)
                 orog = orog.view(B, self.H_tokens, self.scale,
                                 self.W_tokens, self.scale)
-
-                # Permute to group patches: (B, H_tokens, W_tokens, scale, scale)
                 orog = orog.permute(0, 1, 3, 2, 4).contiguous()
-
-                # Flatten each patch: (B, H_tokens, W_tokens, scale * scale)
                 orog = orog.view(B, self.H_tokens, self.W_tokens,
                                 self.scale * self.scale)
-
-                # Flatten spatial token dimensions: (B, num_patches, scale * scale)
                 orog = orog.view(B, self.num_patches, self.scale * self.scale)
-                
-                # Project orography patches to token dimension
-                orog_features = self.orography_embedding(orog)  # (B, N, D)
-                
-                # Add orography features to token embeddings
+                orog_features = self.orography_embedding(orog)
                 x_ = x_ + orog_features
 
             # Pre-decoder CNN block
@@ -294,23 +294,30 @@ class NoisyViT(nn.Module):
 
             # Decoding to the high-resolution grid
             if self.decoder_type == 'pixelshuffle':
-                # PixelShuffle decoding: (B, 1, H_out, W_out)
+                # (B, num_vars, H_out, W_out)
                 x_ = self.decoder(x_)
             else:
-                # Per-token linear decoding
+                # Per-token linear decoding: (B, num_patches, num_vars * kernel**2)
                 x_ = x_.view(B, self.dim, self.num_patches).transpose(1, 2)
                 x_ = self.token_decoder(x_)
 
-                # Overlap-add reconstruction
-                x_ = x_.transpose(1, 2)                       
-                x_ = x_ * self.window                         
-                x_ = self.fold(x_)                          
-                x_ = x_ / self.norm_mask.clamp(min=1e-8)  
+                # Overlap-add reconstruction per variable
+                # (B, num_patches, num_vars * K**2) -> (B, num_vars * K**2, num_patches)
+                x_ = x_.transpose(1, 2)
+                x_ = x_ * self.window
+                # Fold each variable independently
+                x_ = x_.reshape(B * self.num_vars, self.kernel_size**2, self.num_patches)
+                x_ = self.fold(x_)
+                x_ = x_ / self.norm_mask.clamp(min=1e-8)
+                x_ = x_.view(B, self.num_vars, self.H_out, self.W_out)
 
             if self.last_relu:
                 x_ = torch.relu(x_)
 
-            out = x_.view(B, -1)
+            if self.num_vars == 1:
+                out = x_.view(B, -1)
+            else:
+                out = x_.view(B, self.num_vars, -1)
 
             out_members.append(out)
 

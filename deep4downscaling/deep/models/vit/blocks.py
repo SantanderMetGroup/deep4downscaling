@@ -155,7 +155,7 @@ class PixelShuffleDecoder(nn.Module):
        resolution tractable. The convolutions preceding each PixelShuffle are initialized with
        ICNR (Aitken et al., 2017) to suppress checkerboard artifacts."""
 
-    def __init__(self, dim, scale):
+    def __init__(self, dim, scale, out_channels=1):
         super().__init__()
 
         if scale < 1 or (scale & (scale - 1)) != 0:
@@ -165,17 +165,17 @@ class PixelShuffleDecoder(nn.Module):
         upsampling = []
         channels = dim
         for _ in range(int(math.log2(scale))):
-            out_channels = max(channels // 2, 32)
-            conv = nn.Conv2d(channels, out_channels * 4, kernel_size=3, padding=1)
+            stage_out = max(channels // 2, 32)
+            conv = nn.Conv2d(channels, stage_out * 4, kernel_size=3, padding=1)
             self._icnr_init(conv.weight, upscale_factor=2)
             upsampling.extend([conv, nn.PixelShuffle(2), nn.GELU()])
-            channels = out_channels
+            channels = stage_out
         self.upsampling = nn.Sequential(*upsampling)
 
         # Convolutional tail at high resolution
         self.tail = nn.Sequential(nn.Conv2d(channels, channels, kernel_size=3, padding=1),
                                   nn.GELU(),
-                                  nn.Conv2d(channels, 1, kernel_size=3, padding=1))
+                                  nn.Conv2d(channels, out_channels, kernel_size=3, padding=1))
 
     @staticmethod
     def _icnr_init(weight, upscale_factor):

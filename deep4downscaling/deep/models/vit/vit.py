@@ -29,9 +29,9 @@ class ViT(nn.Module):
         The spatial resolution must be a power of 2.
 
     y_shape : tuple
-        Shape of the output data. Must have dimension 2 (batch, num_outputs).
-        The spatial resolution must both a power of 2 and a multiple of the
-        spatial resolution of the input.
+        Shape of the output data. Either 2D (batch, gridpoints) for univariate or
+        3D (batch, num_vars, gridpoints) for multivariate. The spatial resolution must
+        be both a power of 2 and a multiple of the spatial resolution of the input.
 
     patch_size : int
         Size of the patches to extract from the input image for building the token embeddings.
@@ -69,17 +69,30 @@ class ViT(nn.Module):
           (token, intra-patch) order. This is the original decoder and can produce seams at the
           patch boundaries.
 
+    num_vars : int, optional
+        Number of output variables. Default is 1 (univariate, backward compatible).
+        When > 1, the model outputs (B, num_vars, gridpoints). Can also be inferred
+        from a 3D y_shape.
+
     last_relu : bool, optional
         If True, applies ReLU activation to the final output. Default is False.
     """
 
     def __init__(self, x_shape, y_shape, patch_size, dim, depth, num_heads,
                  mlp_dim, dropout=0., orog=None, decoder='pixelshuffle',
-                 last_relu=False):
+                 num_vars=1, last_relu=False):
         super(ViT, self).__init__()
 
-        if (len(x_shape) != 4) or (len(y_shape) != 2):
-            raise ValueError('X must be 4D (B, C, H, W) and Y must be 2D (B, N_outputs)')
+        if len(x_shape) != 4:
+            raise ValueError('X must be 4D (B, C, H, W)')
+
+        if len(y_shape) == 2:
+            gridpoints = y_shape[1]
+        elif len(y_shape) == 3:
+            num_vars = y_shape[1]
+            gridpoints = y_shape[2]
+        else:
+            raise ValueError('Y must be 2D (B, gridpoints) or 3D (B, num_vars, gridpoints)')
 
         if x_shape[2] % patch_size != 0 or x_shape[3] % patch_size != 0:
             raise ValueError('Image dimensions must be divisible by patch_size')
@@ -95,6 +108,7 @@ class ViT(nn.Module):
         self.dropout = dropout
         self.orog = orog
         self.decoder_type = decoder
+        self.num_vars = num_vars
         self.last_relu = last_relu
 
         # Validate decoder
@@ -107,7 +121,7 @@ class ViT(nn.Module):
         self.num_patches = self.H_tokens * self.W_tokens
 
         # Target high-resolution size
-        self.H_out = int(math.sqrt(y_shape[1]))
+        self.H_out = int(math.sqrt(gridpoints))
         self.W_out = self.H_out
 
         # Upscaling factor
@@ -140,11 +154,9 @@ class ViT(nn.Module):
 
         # Decoder
         if self.decoder_type == 'pixelshuffle':
-            # PixelShuffle decoder with convolutional tail at high resolution
-            self.decoder = PixelShuffleDecoder(dim, self.scale)
+            self.decoder = PixelShuffleDecoder(dim, self.scale, out_channels=self.num_vars)
         else:
-            # Per-token linear decoder
-            self.token_decoder = nn.Linear(dim, self.scale**2)
+            self.token_decoder = nn.Linear(dim, self.num_vars * self.scale**2)
 
     def forward(self, x, orography=None):
         B = x.shape[0]
@@ -192,14 +204,19 @@ class ViT(nn.Module):
 
         # Decoding to the high-resolution grid
         if self.decoder_type == 'pixelshuffle':
-            # PixelShuffle decoding: (B, 1, H_out, W_out)
+            # (B, num_vars, H_out, W_out)
             x = self.decoder(x)
         else:
-            # Per-token linear decoding
+            # Per-token linear decoding: (B, num_patches, num_vars * scale**2)
             x = x.view(B, self.dim, self.num_patches).transpose(1, 2)
             x = self.token_decoder(x)
+            if self.num_vars > 1:
+                x = x.view(B, self.num_patches, self.num_vars, self.scale**2)
+                x = x.permute(0, 2, 1, 3).reshape(B, self.num_vars, -1)
 
         if self.last_relu:
             x = torch.relu(x)
-        
-        return x.view(B, -1)
+
+        if self.num_vars == 1:
+            return x.view(B, -1)
+        return x.view(B, self.num_vars, -1)

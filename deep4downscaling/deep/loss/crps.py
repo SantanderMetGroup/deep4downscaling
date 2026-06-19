@@ -182,16 +182,13 @@ class CRPSSpectralLoss(nn.Module):
         else:
             data = [torch.nan_to_num(d, nan=0.0) for d in data]
 
-        B = data[0].shape[0] # Batch size
-        if data[0].ndim == 3: M = data[0].shape[1] # Number of ensemble members
+        # Reshape last dim to (H, W); works for any number of leading dims:
+        #   (B, gridpoint) -> (B, H, W)
+        #   (B, n_vars, gridpoint) -> (B, n_vars, H, W)
+        data = [member.view(*member.shape[:-1], self.H_shape, self.W_shape)
+                for member in data]
 
-        # Reshape to spatial dimensions
-        if data[0].ndim == 2:
-            data = [member.view(B, self.H_shape, self.W_shape) for member in data]
-        elif data[0].ndim == 3:
-            data = [member.view(B, M, self.H_shape, self.W_shape) for member in data]
-
-        # Compute FFT
+        # rfft2 operates on the last two dims
         data = [torch.fft.rfft2(member) for member in data]
 
         # Optionally remove frequencies beyond the Nyquist limit

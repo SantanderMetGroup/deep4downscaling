@@ -333,6 +333,18 @@ class TrainingTracker:
         result[self.spatial_mask == 1] = arr
         return result
 
+    @staticmethod
+    def _get_num_vars(model):
+        """Return num_vars from the model, unwrapping DataParallel if needed."""
+        m = model.module if hasattr(model, 'module') else model
+        return getattr(m, 'num_vars', 1)
+
+    def _to_2d(self, arr_1d):
+        """Convert a 1D gridpoint vector to a 2D spatial field."""
+        if self.spatial_mask is not None:
+            return self._reconstruct_from_mask(arr_1d)
+        return self._reshape_to_2d(arr_1d)
+
     def _save_prediction_samples(self, epoch: int, model: torch.nn.Module,
                                  dataloader: torch.utils.data.DataLoader,
                                  device: str,
@@ -341,6 +353,8 @@ class TrainingTracker:
         """
         Generate and save prediction sample plots for the selected random
         samples. Data is always visualized as 2D spatial fields using imshow.
+        Supports multivariate models (num_vars > 1): each variable gets its
+        own pair of target/prediction columns.
 
         Parameters
         ----------
@@ -362,12 +376,13 @@ class TrainingTracker:
 
         model.eval()
         dataset = dataloader.dataset
+        num_vars = self._get_num_vars(model)
 
         n_samples = len(self._sample_indices)
-        fig, axes = plt.subplots(n_samples, 2, figsize=(10, 4 * n_samples))
-
-        if n_samples == 1:
-            axes = axes[np.newaxis, :]
+        n_cols = 2 * num_vars
+        fig, axes = plt.subplots(n_samples, n_cols,
+                                 figsize=(5 * n_cols, 4 * n_samples),
+                                 squeeze=False)
 
         for i, idx in enumerate(self._sample_indices):
             x, y = dataset[idx]
@@ -380,50 +395,50 @@ class TrainingTracker:
                 else:
                     pred = model(x_input)
 
-            # Handle models that return tuples
             if isinstance(pred, tuple):
                 pred = pred[0]
 
             y_np = y.cpu().numpy()
             pred_np = pred.squeeze(0).cpu().numpy()
 
-            # Prepare arrays for 2D visualization
-            if y_np.ndim == 1:
-                if self.spatial_mask is not None:
-                    y_plot = self._reconstruct_from_mask(y_np)
-                    pred_plot = self._reconstruct_from_mask(pred_np.flatten())
-                else:
-                    y_plot = self._reshape_to_2d(y_np)
-                    pred_plot = self._reshape_to_2d(pred_np.flatten())
-            elif y_np.ndim == 2:
-                y_plot = y_np
-                pred_plot = pred_np
-            elif y_np.ndim == 3:
-                y_plot = y_np[0]
-                pred_plot = pred_np[0]
+            # Build per-variable (target, prediction) pairs
+            if num_vars > 1 and y_np.ndim == 2:
+                y_vars = [y_np[v] for v in range(num_vars)]
+                pred_vars = [pred_np[v] for v in range(num_vars)]
+            else:
+                y_flat = y_np.flatten() if y_np.ndim > 1 else y_np
+                pred_flat = pred_np.flatten() if pred_np.ndim > 1 else pred_np
+                y_vars = [y_flat]
+                pred_vars = [pred_flat]
 
-            # Apply orientation corrections if requested
-            if self.flip_ud:
-                y_plot = np.flipud(y_plot)
-                pred_plot = np.flipud(pred_plot)
-            if self.flip_lr:
-                y_plot = np.fliplr(y_plot)
-                pred_plot = np.fliplr(pred_plot)
+            for v in range(num_vars):
+                y_plot = self._to_2d(y_vars[v])
+                pred_plot = self._to_2d(pred_vars[v])
 
-            # Use shared color limits for target and prediction
-            vmin = min(np.nanmin(y_plot), np.nanmin(pred_plot))
-            vmax = max(np.nanmax(y_plot), np.nanmax(pred_plot))
+                if self.flip_ud:
+                    y_plot = np.flipud(y_plot)
+                    pred_plot = np.flipud(pred_plot)
+                if self.flip_lr:
+                    y_plot = np.fliplr(y_plot)
+                    pred_plot = np.fliplr(pred_plot)
 
-            im0 = axes[i, 0].imshow(y_plot, aspect='auto', cmap='turbo',
-                                    vmin=vmin, vmax=vmax)
-            plt.colorbar(im0, ax=axes[i, 0], fraction=0.046)
+                vmin = min(np.nanmin(y_plot), np.nanmin(pred_plot))
+                vmax = max(np.nanmax(y_plot), np.nanmax(pred_plot))
 
-            im1 = axes[i, 1].imshow(pred_plot, aspect='auto', cmap='turbo',
-                                    vmin=vmin, vmax=vmax)
-            plt.colorbar(im1, ax=axes[i, 1], fraction=0.046)
+                col_t = 2 * v
+                col_p = 2 * v + 1
 
-            axes[i, 0].set_title(f'Target (sample {idx})')
-            axes[i, 1].set_title(f'Prediction (sample {idx})')
+                im0 = axes[i, col_t].imshow(y_plot, aspect='auto',
+                                            cmap='turbo', vmin=vmin, vmax=vmax)
+                plt.colorbar(im0, ax=axes[i, col_t], fraction=0.046)
+
+                im1 = axes[i, col_p].imshow(pred_plot, aspect='auto',
+                                            cmap='turbo', vmin=vmin, vmax=vmax)
+                plt.colorbar(im1, ax=axes[i, col_p], fraction=0.046)
+
+                var_label = f' var{v}' if num_vars > 1 else ''
+                axes[i, col_t].set_title(f'Target{var_label} (sample {idx})')
+                axes[i, col_p].set_title(f'Pred{var_label} (sample {idx})')
 
         fig.suptitle(f'Epoch {epoch + 1}', fontsize=14, fontweight='bold')
         fig.tight_layout(rect=[0, 0, 1, 0.97])
