@@ -104,6 +104,15 @@ We provide a set of Jupyter notebooks in the `notebooks` directory that demonstr
 
 As new features are developed and added to `deep4downscaling`, additional example notebooks will be included to help you stay up-to-date with the latest capabilities.
 
+### Notes on the ViT-based models
+
+The Vision Transformer models (`ViT` and `NoisyViT`) come with a few conventions worth keeping in mind:
+
+- **Square output grid.** The target grid is assumed to be square, i.e. `gridpoints` (the size of the flattened spatial dimension) must be a perfect square (`H_out == W_out`).
+- **Decoder.** The decoder is selectable via the `decoder` argument: `'pixelshuffle'` (default) or `'linear'`. The `'pixelshuffle'` decoder additionally requires the upscaling factor (`H_out // H_tokens`) to be a power of 2.
+- **Gridpoint ordering.** Both decoders flatten the output in row-major `(lat, lon)` order, matching `stack(gridpoint=('lat', 'lon'))`. When using `CRPSSpectralLoss`, the `H_shape`/`W_shape` arguments must match the order used to stack the target.
+- **`NoisyViT` ensemble mode.** `NoisyViT.forward` returns a list of ensemble members when training or when gradients are enabled, and a single tensor otherwise. Validation/evaluation with the CRPS loss must therefore keep gradients enabled (do not wrap it in `torch.no_grad()`); otherwise the loss collapses to a single member.
+
 ## Documentation
 
 While `deep4downscaling` does not currently offer a formal documentation website, all library functions include comprehensive `docstrings` describing their purpose, parameters, and return values. This ensures that the code is self-explanatory for developers who want to use or extend the library.

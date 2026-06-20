@@ -83,12 +83,12 @@ class NoisyViT(nn.Module):
         Decoder used to map tokens to the high-resolution grid. Default is 'pixelshuffle'. Options:
         - 'pixelshuffle': PixelShuffle decoder followed by a convolutional tail operating at high
           resolution. The convolutions see across patch borders, removing the seams produced by
-          independent per-token decoding. The output is flattened in row-major (lat, lon) order,
-          matching xarray's stack(gridpoint=('lat', 'lon')).
+          independent per-token decoding.
         - 'linear': per-token linear decoder. Each token is decoded independently into a
-          scale ** 2 patch, and the patches are folded back into the high-resolution grid. The
-          output is flattened in (token, intra-patch) order. This is the original decoder and can
-          produce seams at the patch boundaries.
+          scale ** 2 patch and the patches are folded back into the high-resolution grid. This
+          is the original decoder and can produce seams at the patch boundaries.
+        Both decoders flatten the output in row-major (lat, lon) order, matching xarray's
+        stack(gridpoint=('lat', 'lon')).
 
     noise_mode : str, optional
         Mode for noise injection. Default is 'patch'. Options:
@@ -102,6 +102,18 @@ class NoisyViT(nn.Module):
 
     last_relu : bool, optional
         If True, applies ReLU activation to the final output. Default is False.
+
+    Notes
+    -----
+    The output grid is assumed to be square (H_out == W_out), so gridpoints must be
+    a perfect square. When using the 'pixelshuffle' decoder, the upscaling factor
+    (scale = H_out // H_tokens) must additionally be a power of 2.
+
+    The forward pass returns a list of ensemble members when in training mode or
+    when gradients are enabled (``self.training or torch.is_grad_enabled()``), and a
+    single tensor otherwise. As a consequence, validation/evaluation must keep
+    gradients enabled (do not wrap it in ``torch.no_grad()``) for the CRPS loss to
+    receive several members; otherwise the loss collapses to a single member.
     """
 
     def __init__(self, x_shape, y_shape, patch_size, dim, depth, num_heads,
@@ -160,9 +172,12 @@ class NoisyViT(nn.Module):
         self.W_tokens = x_shape[3] // patch_size
         self.num_patches = self.H_tokens * self.W_tokens
 
-        # Target high-resolution size
+        # Target high-resolution size (square grid assumed)
         self.H_out = int(math.sqrt(gridpoints))
         self.W_out = self.H_out
+        if self.H_out * self.W_out != gridpoints:
+            raise ValueError("The output grid must be square: gridpoints must be a "
+                             "perfect square (H_out == W_out)")
 
         # Upscaling factor
         self.scale = self.H_out // self.H_tokens
@@ -210,7 +225,7 @@ class NoisyViT(nn.Module):
                                 kernel_size=self.kernel_size,
                                 stride=self.scale)
 
-    def forward(self, x, orography=None):
+    def forward(self, x):
         B = x.shape[0]
 
         # Determine if we are in ensemble mode

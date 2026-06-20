@@ -62,12 +62,12 @@ class ViT(nn.Module):
         Decoder used to map tokens to the high-resolution grid. Default is 'pixelshuffle'. Options:
         - 'pixelshuffle': PixelShuffle decoder followed by a convolutional tail operating at high
           resolution. The convolutions see across patch borders, removing the seams produced by
-          independent per-token decoding. The output is flattened in row-major (lat, lon) order,
-          matching xarray's stack(gridpoint=('lat', 'lon')).
+          independent per-token decoding.
         - 'linear': per-token linear decoder. Each token is decoded independently into a
-          scale * scale patch, and the patches are concatenated. The output is flattened in
-          (token, intra-patch) order. This is the original decoder and can produce seams at the
-          patch boundaries.
+          scale * scale patch and the patches are folded back into the high-resolution grid.
+          This is the original decoder and can produce seams at the patch boundaries.
+        Both decoders flatten the output in row-major (lat, lon) order, matching xarray's
+        stack(gridpoint=('lat', 'lon')).
 
     num_vars : int, optional
         Number of output variables. Default is 1 (univariate, backward compatible).
@@ -76,6 +76,12 @@ class ViT(nn.Module):
 
     last_relu : bool, optional
         If True, applies ReLU activation to the final output. Default is False.
+
+    Notes
+    -----
+    The output grid is assumed to be square (H_out == W_out), so gridpoints must be
+    a perfect square. When using the 'pixelshuffle' decoder, the upscaling factor
+    (scale = H_out // H_tokens) must additionally be a power of 2.
     """
 
     def __init__(self, x_shape, y_shape, patch_size, dim, depth, num_heads,
@@ -120,9 +126,12 @@ class ViT(nn.Module):
         self.W_tokens = x_shape[3] // patch_size
         self.num_patches = self.H_tokens * self.W_tokens
 
-        # Target high-resolution size
+        # Target high-resolution size (square grid assumed)
         self.H_out = int(math.sqrt(gridpoints))
         self.W_out = self.H_out
+        if self.H_out * self.W_out != gridpoints:
+            raise ValueError("The output grid must be square: gridpoints must be a "
+                             "perfect square (H_out == W_out)")
 
         # Upscaling factor
         self.scale = self.H_out // self.H_tokens
@@ -156,9 +165,17 @@ class ViT(nn.Module):
         if self.decoder_type == 'pixelshuffle':
             self.decoder = PixelShuffleDecoder(dim, self.scale, out_channels=self.num_vars)
         else:
-            self.token_decoder = nn.Linear(dim, self.num_vars * self.scale**2)
+            self.kernel_size = self.scale
 
-    def forward(self, x, orography=None):
+            # Per-token linear decoder (outputs num_vars * kernel_size**2 per token)
+            self.token_decoder = nn.Linear(dim, self.num_vars * self.kernel_size**2)
+
+            # Folding layer (folds num_vars * kernel_size**2 channels)
+            self.fold = nn.Fold(output_size=(self.H_out, self.W_out),
+                                kernel_size=self.kernel_size,
+                                stride=self.scale)
+
+    def forward(self, x):
         B = x.shape[0]
 
         # Patch embedding
@@ -207,12 +224,16 @@ class ViT(nn.Module):
             # (B, num_vars, H_out, W_out)
             x = self.decoder(x)
         else:
-            # Per-token linear decoding: (B, num_patches, num_vars * scale**2)
+            # Per-token linear decoding: (B, num_patches, num_vars * kernel**2)
             x = x.view(B, self.dim, self.num_patches).transpose(1, 2)
             x = self.token_decoder(x)
-            if self.num_vars > 1:
-                x = x.view(B, self.num_patches, self.num_vars, self.scale**2)
-                x = x.permute(0, 2, 1, 3).reshape(B, self.num_vars, -1)
+
+            # Fold patches back into the high-resolution grid, per variable
+            # (B, num_patches, num_vars * K**2) -> (B, num_vars * K**2, num_patches)
+            x = x.transpose(1, 2)
+            x = x.reshape(B * self.num_vars, self.kernel_size**2, self.num_patches)
+            x = self.fold(x)
+            x = x.view(B, self.num_vars, self.H_out, self.W_out)
 
         if self.last_relu:
             x = torch.relu(x)

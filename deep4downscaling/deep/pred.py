@@ -6,7 +6,6 @@ Author: Jose González-Abad
 """
 
 import sys
-import sys
 import gc
 import types
 import torch
@@ -311,6 +310,10 @@ def compute_preds_standard(x_data: xr.Dataset, model: torch.nn.Module, device: s
         raise ValueError('Provide either a mask or a template.')
 
     multivariate = isinstance(var_target, (list, tuple))
+
+    if multivariate and template is not None:
+        raise ValueError('Multivariate prediction (list of var_target) is only '
+                         'supported with a mask, not a template.')
 
     # Add channel dimension for one-dimensional predictors
     if len(list(x_data.keys())) <= 1:

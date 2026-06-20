@@ -100,10 +100,14 @@ class CRPSSpectralLoss(nn.Module):
         target domain. This only applies to the pointwise CRPS.
 
     H_shape : int
-        Height of the predictand's spatial domain.
+        Height of the predictand's spatial domain. The flattened gridpoint
+        dimension is reshaped as (H_shape, W_shape) in row-major order, so
+        H_shape and W_shape must match the order used when stacking the target
+        (e.g., stack(gridpoint=('lat', 'lon')) implies H_shape=len(lat),
+        W_shape=len(lon)).
 
     W_shape : int
-        Width of the predictand's spatial domain.
+        Width of the predictand's spatial domain. See H_shape.
 
     beta : int
         Power parameter for the absolute differences in the CRPS computation.
