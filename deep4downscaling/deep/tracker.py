@@ -68,13 +68,24 @@ class TrainingTracker:
         ``loss_components.png`` figure styled after the intercomparison
         plotting convention is saved alongside the standard
         ``component_curves.png``.
+
+    ensemble_size : int, optional
+        Number of stochastic members to draw per sample when generating
+        prediction figures. When provided, the model is run
+        ``ensemble_size`` times per sample (each call draws a fresh noise
+        sample) and a third column per variable showing the per-gridpoint
+        standard deviation across members is added next to the existing
+        Target/Pred columns. The Pred column keeps showing a single
+        stochastic member. By default None, which preserves the original
+        two-column Target/Pred layout.
     """
 
     def __init__(self, experiment_dir: str, experiment_name: str=None,
                  log_every: int=5, num_samples: int=4,
                  spatial_mask: np.ndarray=None,
                  flip_ud: bool=False, flip_lr: bool=False,
-                 lambda_spectral: float=None) -> None:
+                 lambda_spectral: float=None,
+                 ensemble_size: int=None) -> None:
 
         self.experiment_dir = os.path.expanduser(experiment_dir)
         self.log_every = log_every
@@ -83,6 +94,7 @@ class TrainingTracker:
         self.flip_ud = flip_ud
         self.flip_lr = flip_lr
         self.lambda_spectral = lambda_spectral
+        self.ensemble_size = ensemble_size
 
         # Generate experiment name if not provided
         if experiment_name is None:
@@ -354,7 +366,9 @@ class TrainingTracker:
         Generate and save prediction sample plots for the selected random
         samples. Data is always visualized as 2D spatial fields using imshow.
         Supports multivariate models (num_vars > 1): each variable gets its
-        own pair of target/prediction columns.
+        own set of target/prediction columns. When ``self.ensemble_size`` is
+        set, an extra per-variable column showing the standard deviation of
+        the members is appended after the prediction column.
 
         Parameters
         ----------
@@ -377,9 +391,10 @@ class TrainingTracker:
         model.eval()
         dataset = dataloader.dataset
         num_vars = self._get_num_vars(model)
+        has_spread = self.ensemble_size is not None
 
         n_samples = len(self._sample_indices)
-        n_cols = 2 * num_vars
+        n_cols = 3 * num_vars if has_spread else 2 * num_vars
         fig, axes = plt.subplots(n_samples, n_cols,
                                  figsize=(5 * n_cols, 4 * n_samples),
                                  squeeze=False)
@@ -389,27 +404,50 @@ class TrainingTracker:
             x_input = x.unsqueeze(0).to(device)
 
             with torch.no_grad():
-                if mixed_precision:
-                    with torch.amp.autocast(device_type=device):
-                        pred = model(x_input)
+                if has_spread:
+                    members = []
+                    for _ in range(self.ensemble_size):
+                        if mixed_precision:
+                            with torch.amp.autocast(device_type=device):
+                                m = model(x_input)
+                        else:
+                            m = model(x_input)
+                        if isinstance(m, tuple):
+                            m = m[0]
+                        members.append(m.squeeze(0).cpu().numpy())
+                    member_stack = np.stack(members, axis=0)
+                    pred_np = member_stack[0]
+                    std_np = member_stack.std(axis=0)
                 else:
-                    pred = model(x_input)
-
-            if isinstance(pred, tuple):
-                pred = pred[0]
+                    if mixed_precision:
+                        with torch.amp.autocast(device_type=device):
+                            pred = model(x_input)
+                    else:
+                        pred = model(x_input)
+                    if isinstance(pred, tuple):
+                        pred = pred[0]
+                    pred_np = pred.squeeze(0).cpu().numpy()
+                    std_np = None
 
             y_np = y.cpu().numpy()
-            pred_np = pred.squeeze(0).cpu().numpy()
 
             # Build per-variable (target, prediction) pairs
             if num_vars > 1 and y_np.ndim == 2:
                 y_vars = [y_np[v] for v in range(num_vars)]
                 pred_vars = [pred_np[v] for v in range(num_vars)]
+                std_vars = ([std_np[v] for v in range(num_vars)]
+                            if std_np is not None else None)
             else:
                 y_flat = y_np.flatten() if y_np.ndim > 1 else y_np
                 pred_flat = pred_np.flatten() if pred_np.ndim > 1 else pred_np
                 y_vars = [y_flat]
                 pred_vars = [pred_flat]
+                if std_np is not None:
+                    std_flat = (std_np.flatten() if std_np.ndim > 1
+                                else std_np)
+                    std_vars = [std_flat]
+                else:
+                    std_vars = None
 
             for v in range(num_vars):
                 y_plot = self._to_2d(y_vars[v])
@@ -439,6 +477,22 @@ class TrainingTracker:
                 var_label = f' var{v}' if num_vars > 1 else ''
                 axes[i, col_t].set_title(f'Target{var_label} (sample {idx})')
                 axes[i, col_p].set_title(f'Pred{var_label} (sample {idx})')
+
+                if has_spread:
+                    std_plot = self._to_2d(std_vars[v])
+                    if self.flip_ud:
+                        std_plot = np.flipud(std_plot)
+                    if self.flip_lr:
+                        std_plot = np.fliplr(std_plot)
+
+                    col_s = 2 * v + 2
+                    std_vmax = np.nanmax(std_plot)
+                    im2 = axes[i, col_s].imshow(std_plot, aspect='auto',
+                                                cmap='magma', vmin=0,
+                                                vmax=std_vmax)
+                    plt.colorbar(im2, ax=axes[i, col_s], fraction=0.046)
+                    axes[i, col_s].set_title(
+                        f'Spread (std){var_label} (sample {idx})')
 
         fig.suptitle(f'Epoch {epoch + 1}', fontsize=14, fontweight='bold')
         fig.tight_layout(rect=[0, 0, 1, 0.97])
