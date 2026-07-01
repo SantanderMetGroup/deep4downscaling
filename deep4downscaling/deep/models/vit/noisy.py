@@ -3,8 +3,9 @@
 """
 This module contains the Noisy Vision Transformer (NoisyViT) model for statistical downscaling.
 
-The model injects noise into the encoder to generate stochastic outputs following the
-implementation in Lang et al. (2024).
+The model injects noise into the encoder to generate stochastic outputs. Two injection
+mechanisms are supported: conditional layer normalization (Lang et al., 2024) and
+multi-stage channel concatenation (NoisyDeepESD-style).
 
 Lang, S., Alexe, M., Clare, M. C., Roberts, C., Adewoyin, R., Bouallègue, Z. B., ... & Leutbecher, M. (2024).
 AIFS-CRPS: ensemble forecasting using a model trained with a loss function based on the continuous ranked
@@ -19,7 +20,7 @@ import torch
 import torch.nn as nn
 import math
 
-from .blocks import NoiseEmbedding, TransformerBlockCLN, CNNBlock, PixelShuffleDecoder
+from .blocks import NoiseEmbedding, TransformerBlock, TransformerBlockCLN, CNNBlock, PixelShuffleDecoder
 
 class NoisyViT(nn.Module):
     """
@@ -66,7 +67,7 @@ class NoisyViT(nn.Module):
         Number of noise channels to inject into the input. Must be greater than 0.
 
     noise_dim : int
-        Dimension of the noise embeddings.
+        Dimension of the noise embeddings. Only used when ``noise_injection='cln'``.
 
     members_for_training : int, optional
         Number of members to train in ensemble mode. Default is 2.
@@ -95,6 +96,14 @@ class NoisyViT(nn.Module):
         - 'patch': Different noise samples for each patch embedding (spatially varying).
         - 'global': Same noise sample for all patch embeddings (spatially uniform).
 
+    noise_injection : str, optional
+        Mechanism for noise injection. Default is 'cln'. Options:
+        - 'cln': Conditional layer normalization in the transformer blocks, following
+          Lang et al. (2024).
+        - 'concat': Raw Gaussian noise channels concatenated to the input grid before
+          patch embedding and to the decoder feature map before the pre-decoder CNN block.
+          Uses plain transformer blocks without conditional normalization.
+
     num_vars : int, optional
         Number of output variables. Default is 1 (univariate, backward compatible).
         When > 1, the model outputs (B, num_vars, gridpoints). Can also be inferred
@@ -121,6 +130,7 @@ class NoisyViT(nn.Module):
                  members_for_training=2,
                  dropout=0., orog=None, decoder='pixelshuffle',
                  noise_mode='patch',
+                 noise_injection='cln',
                  num_vars=1,
                  last_relu=False):
         super(NoisyViT, self).__init__()
@@ -158,6 +168,7 @@ class NoisyViT(nn.Module):
         self.noise_channels = noise_channels
         self.noise_dim = noise_dim
         self.noise_mode = noise_mode
+        self.noise_injection = noise_injection
 
         # Validate decoder
         if self.decoder_type not in ['pixelshuffle', 'linear']:
@@ -166,6 +177,10 @@ class NoisyViT(nn.Module):
         # Validate noise_mode
         if self.noise_mode not in ['patch', 'global']:
             raise ValueError("noise_mode must be either 'patch' or 'global'")
+
+        # Validate noise_injection
+        if self.noise_injection not in ['cln', 'concat']:
+            raise ValueError("noise_injection must be either 'cln' or 'concat'")
 
         # Coarse grid size (number of tokens in each dimension)
         self.H_tokens = x_shape[2] // patch_size
@@ -190,7 +205,10 @@ class NoisyViT(nn.Module):
             self.orography_embedding = nn.Linear(self.scale * self.scale, dim)
 
         # Patch embedding
-        self.patch_embedding = nn.Conv2d(x_shape[1], dim, kernel_size=patch_size, stride=patch_size)
+        patch_in_channels = x_shape[1]
+        if self.noise_injection == 'concat':
+            patch_in_channels += noise_channels
+        self.patch_embedding = nn.Conv2d(patch_in_channels, dim, kernel_size=patch_size, stride=patch_size)
 
         # Positional embeddings
         self.pos_embedding = nn.Parameter(torch.randn(1, self.num_patches, dim))
@@ -198,14 +216,19 @@ class NoisyViT(nn.Module):
         # Dropout for embeddings
         self.dropout_emb = nn.Dropout(dropout)
 
-        # Noise embedding
-        self.noise_embedding = NoiseEmbedding(noise_channels, noise_dim)
-
-        # Transformer blocks
-        self.transformer_blocks = nn.ModuleList([
-            TransformerBlockCLN(dim, num_heads, mlp_dim, noise_dim, dropout)
-            for _ in range(depth)
-        ])
+        # Noise embedding and transformer blocks
+        if self.noise_injection == 'cln':
+            self.noise_embedding = NoiseEmbedding(noise_channels, noise_dim)
+            self.transformer_blocks = nn.ModuleList([
+                TransformerBlockCLN(dim, num_heads, mlp_dim, noise_dim, dropout)
+                for _ in range(depth)
+            ])
+        else:
+            self.transformer_blocks = nn.ModuleList([
+                TransformerBlock(dim, num_heads, mlp_dim, dropout)
+                for _ in range(depth)
+            ])
+            self.noise_proj = nn.Conv2d(dim + noise_channels, dim, kernel_size=1)
         self.norm = nn.LayerNorm(dim)
 
         # Pre-decoder CNN blocks
@@ -240,26 +263,47 @@ class NoisyViT(nn.Module):
         out_members = []
         for i in range(members_to_iterate):
 
-            # Sample noise
-            if self.noise_mode == 'patch':
-                z = torch.randn(B, self.num_patches, self.noise_channels, device=x.device)
+            if self.noise_injection == 'cln':
+                # Sample noise
+                if self.noise_mode == 'patch':
+                    z = torch.randn(B, self.num_patches, self.noise_channels, device=x.device)
+                else:
+                    z = torch.randn(B, 1, self.noise_channels, device=x.device)
+                    z = z.expand(-1, self.num_patches, -1)
+                z = self.noise_embedding(z)
+
+                # Patch embedding
+                x_ = self.patch_embedding(x)
+                x_ = x_.flatten(2).transpose(1, 2)
+
+                # Add positional embeddings
+                x_ = x_ + self.pos_embedding
+                x_ = self.dropout_emb(x_)
+
+                # Transformer
+                for block in self.transformer_blocks:
+                    x_ = block(x_, z)
+                x_ = self.norm(x_)
             else:
-                z = torch.randn(B, 1, self.noise_channels, device=x.device)
-                z = z.expand(-1, self.num_patches, -1)
-            z = self.noise_embedding(z)
+                # Stage 1: concat noise to the input grid
+                if self.noise_mode == 'patch':
+                    z_in = torch.randn(B, self.noise_channels, x.shape[2], x.shape[3], device=x.device)
+                else:
+                    z_in = torch.randn(B, self.noise_channels, 1, 1, device=x.device)
+                    z_in = z_in.expand(-1, -1, x.shape[2], x.shape[3])
+                x_ = torch.cat((x, z_in), dim=1)
 
-            # Patch embedding
-            x_ = self.patch_embedding(x)                 
-            x_ = x_.flatten(2).transpose(1, 2)            
+                x_ = self.patch_embedding(x_)
+                x_ = x_.flatten(2).transpose(1, 2)
 
-            # Add positional embeddings
-            x_ = x_ + self.pos_embedding                  
-            x_ = self.dropout_emb(x_)                     
+                # Add positional embeddings
+                x_ = x_ + self.pos_embedding
+                x_ = self.dropout_emb(x_)
 
-            # Transformer
-            for block in self.transformer_blocks:
-                x_ = block(x_, z)
-            x_ = self.norm(x_)                            
+                # Transformer
+                for block in self.transformer_blocks:
+                    x_ = block(x_)
+                x_ = self.norm(x_)
 
             # Orography conditioning 
             if self.orog is not None:
@@ -274,7 +318,17 @@ class NoisyViT(nn.Module):
                 x_ = x_ + orog_features
 
             # Pre-decoder CNN block
-            x_ = x_.transpose(1, 2).view(B, self.dim, self.H_tokens, self.W_tokens)     
+            x_ = x_.transpose(1, 2).view(B, self.dim, self.H_tokens, self.W_tokens)
+
+            if self.noise_injection == 'concat':
+                if self.noise_mode == 'patch':
+                    z_dec = torch.randn(B, self.noise_channels, self.H_tokens, self.W_tokens, device=x.device)
+                else:
+                    z_dec = torch.randn(B, self.noise_channels, 1, 1, device=x.device)
+                    z_dec = z_dec.expand(-1, -1, self.H_tokens, self.W_tokens)
+                x_ = torch.cat((x_, z_dec), dim=1)
+                x_ = self.noise_proj(x_)
+
             x_ = self.cnn_block(x_)
 
             # Decoding to the high-resolution grid
