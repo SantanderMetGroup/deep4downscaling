@@ -20,7 +20,8 @@ import torch
 import torch.nn as nn
 import math
 
-from .blocks import NoiseEmbedding, TransformerBlock, TransformerBlockCLN, CNNBlock, PixelShuffleDecoder
+from .blocks import (NoiseEmbedding, TransformerBlockCLN, TransformerBlockConcat,
+                     CNNBlock, PixelShuffleDecoder)
 
 class NoisyViT(nn.Module):
     """
@@ -101,8 +102,8 @@ class NoisyViT(nn.Module):
         - 'cln': Conditional layer normalization in the transformer blocks, following
           Lang et al. (2024).
         - 'concat': Raw Gaussian noise channels concatenated to the input grid before
-          patch embedding and to the decoder feature map before the pre-decoder CNN block.
-          Uses plain transformer blocks without conditional normalization.
+          patch embedding, to the token features at each transformer block, and to the
+          decoder feature map before the pre-decoder CNN block (NoisyDeepESD-style).
 
     num_vars : int, optional
         Number of output variables. Default is 1 (univariate, backward compatible).
@@ -225,7 +226,7 @@ class NoisyViT(nn.Module):
             ])
         else:
             self.transformer_blocks = nn.ModuleList([
-                TransformerBlock(dim, num_heads, mlp_dim, dropout)
+                TransformerBlockConcat(dim, num_heads, mlp_dim, noise_channels, dropout)
                 for _ in range(depth)
             ])
             self.noise_proj = nn.Conv2d(dim + noise_channels, dim, kernel_size=1)
@@ -302,7 +303,12 @@ class NoisyViT(nn.Module):
 
                 # Transformer
                 for block in self.transformer_blocks:
-                    x_ = block(x_)
+                    if self.noise_mode == 'patch':
+                        z = torch.randn(B, self.num_patches, self.noise_channels, device=x.device)
+                    else:
+                        z = torch.randn(B, 1, self.noise_channels, device=x.device)
+                        z = z.expand(-1, self.num_patches, -1)
+                    x_ = block(x_, z)
                 x_ = self.norm(x_)
 
             # Orography conditioning 

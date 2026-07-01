@@ -124,6 +124,34 @@ class TransformerBlockCLN(nn.Module):
         x = x + self.mlp(self.norm2(x, z))
         return x
 
+class TransformerBlockConcat(nn.Module):
+    """Transformer encoder block with multi-head attention and MLP, conditioned on noise
+       through channel concatenation and a linear projection."""
+
+    def __init__(self, dim, num_heads, mlp_dim, noise_channels, dropout=0., zero_init=True):
+        super().__init__()
+
+        self.noise_proj = nn.Linear(dim + noise_channels, dim)
+        if zero_init:
+            nn.init.zeros_(self.noise_proj.weight)
+            nn.init.zeros_(self.noise_proj.bias)
+
+        self.attention = nn.Sequential(nn.LayerNorm(dim),
+                                       MultiHeadAttention(dim, num_heads, dropout))
+
+        self.mlp = nn.Sequential(nn.LayerNorm(dim),
+                                 nn.Linear(dim, mlp_dim),
+                                 nn.GELU(),
+                                 nn.Dropout(dropout),
+                                 nn.Linear(mlp_dim, dim),
+                                 nn.Dropout(dropout))
+
+    def forward(self, x, z):
+        x = x + self.noise_proj(torch.cat((x, z), dim=-1))
+        x = x + self.attention(x)
+        x = x + self.mlp(x)
+        return x
+
 class CNNBlock(nn.Module):
     """Standard CNN Block. Conv2d, GELU, Conv2d."""
 
