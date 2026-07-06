@@ -222,10 +222,16 @@ def _multivar_pred_to_xarray(data_pred: np.ndarray, time_pred: np.ndarray,
     single-variable copy of the mask, then all variables are merged into one
     Dataset.
     """
-    mask_var = list(mask.data_vars)[0]
+    mask_vars = list(mask.data_vars)
     datasets = []
     for i, vt in enumerate(var_targets):
-        mask_i = mask.rename({mask_var: vt}) if mask_var != vt else mask.copy(deep=True)
+        if vt in mask.data_vars:
+            mask_i = mask[[vt]]
+        elif len(mask_vars) == 1:
+            mask_var = mask_vars[0]
+            mask_i = mask.rename({mask_var: vt}) if mask_var != vt else mask[[mask_var]]
+        else:
+            raise ValueError(f"Mask has no variable {vt!r}. Available: {mask_vars}")
         ds_i = _pred_to_xarray(data_pred=data_pred[:, i, :],
                                time_pred=time_pred,
                                var_target=vt, mask=mask_i,
