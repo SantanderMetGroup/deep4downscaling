@@ -37,6 +37,6 @@ dependencies = [
     "bottleneck"
 ]
 
-[tool.setuptools]
-packages = ["deep4downscaling"]
+[tool.setuptools.packages.find]
+include = ["deep4downscaling*"]
 

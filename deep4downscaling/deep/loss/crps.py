@@ -100,10 +100,14 @@ class CRPSSpectralLoss(nn.Module):
         target domain. This only applies to the pointwise CRPS.
 
     H_shape : int
-        Height of the predictand's spatial domain.
+        Height of the predictand's spatial domain. The flattened gridpoint
+        dimension is reshaped as (H_shape, W_shape) in row-major order, so
+        H_shape and W_shape must match the order used when stacking the target
+        (e.g., stack(gridpoint=('lat', 'lon')) implies H_shape=len(lat),
+        W_shape=len(lon)).
 
     W_shape : int
-        Width of the predictand's spatial domain.
+        Width of the predictand's spatial domain. See H_shape.
 
     beta : int
         Power parameter for the absolute differences in the CRPS computation.
@@ -182,16 +186,13 @@ class CRPSSpectralLoss(nn.Module):
         else:
             data = [torch.nan_to_num(d, nan=0.0) for d in data]
 
-        B = data[0].shape[0] # Batch size
-        if data[0].ndim == 3: M = data[0].shape[1] # Number of ensemble members
+        # Reshape last dim to (H, W); works for any number of leading dims:
+        #   (B, gridpoint) -> (B, H, W)
+        #   (B, n_vars, gridpoint) -> (B, n_vars, H, W)
+        data = [member.view(*member.shape[:-1], self.H_shape, self.W_shape)
+                for member in data]
 
-        # Reshape to spatial dimensions
-        if data[0].ndim == 2:
-            data = [member.view(B, self.H_shape, self.W_shape) for member in data]
-        elif data[0].ndim == 3:
-            data = [member.view(B, M, self.H_shape, self.W_shape) for member in data]
-
-        # Compute FFT
+        # rfft2 operates on the last two dims
         data = [torch.fft.rfft2(member) for member in data]
 
         # Optionally remove frequencies beyond the Nyquist limit
