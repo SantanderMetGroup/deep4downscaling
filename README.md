@@ -85,6 +85,7 @@ cd deep4downscaling
 It is recommended to use a virtual environment or a conda environment. Once your environment is active, you can install the library and its dependencies using `pip`:
 
 ```bash
+pip install --upgrade pip setuptools wheel
 pip install .
 ```
 
