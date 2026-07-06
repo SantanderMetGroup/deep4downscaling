@@ -11,7 +11,6 @@ Authors:
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-import numpy as np
 import math
 
 class MultiHeadAttention(nn.Module):
@@ -27,27 +26,19 @@ class MultiHeadAttention(nn.Module):
 
         self.qkv_proj = nn.Linear(dim, 3 * dim)
         self.out_proj = nn.Linear(dim, dim)
-        self.dropout = nn.Dropout(dropout)
+        self.attn_dropout = dropout
 
     def forward(self, x):
         batch_size, seq_len, dim = x.shape
 
-        # Generate Q, K, V
         qkv = self.qkv_proj(x)
         qkv = qkv.reshape(batch_size, seq_len, 3, self.num_heads, self.head_dim)
         qkv = qkv.permute(2, 0, 3, 1, 4)  # (3, batch, heads, seq, head_dim)
         q, k, v = qkv[0], qkv[1], qkv[2]
 
-        # Attention computation
-        scale = math.sqrt(self.head_dim)
-        attn_weights = torch.matmul(q, k.transpose(-2, -1)) / scale
-        attn_weights = F.softmax(attn_weights, dim=-1)
-        attn_weights = self.dropout(attn_weights)
+        attn_output = F.scaled_dot_product_attention(q, k, v,
+                                                     dropout_p=self.attn_dropout if self.training else 0.0)
 
-        # Apply attention to values
-        attn_output = torch.matmul(attn_weights, v)
-
-        # Reshape and project
         attn_output = attn_output.transpose(1, 2).contiguous()
         attn_output = attn_output.view(batch_size, seq_len, dim)
         output = self.out_proj(attn_output)
@@ -133,6 +124,34 @@ class TransformerBlockCLN(nn.Module):
         x = x + self.mlp(self.norm2(x, z))
         return x
 
+class TransformerBlockConcat(nn.Module):
+    """Transformer encoder block with multi-head attention and MLP, conditioned on noise
+       through channel concatenation and a linear projection."""
+
+    def __init__(self, dim, num_heads, mlp_dim, noise_channels, dropout=0., zero_init=True):
+        super().__init__()
+
+        self.noise_proj = nn.Linear(dim + noise_channels, dim)
+        if zero_init:
+            nn.init.zeros_(self.noise_proj.weight)
+            nn.init.zeros_(self.noise_proj.bias)
+
+        self.attention = nn.Sequential(nn.LayerNorm(dim),
+                                       MultiHeadAttention(dim, num_heads, dropout))
+
+        self.mlp = nn.Sequential(nn.LayerNorm(dim),
+                                 nn.Linear(dim, mlp_dim),
+                                 nn.GELU(),
+                                 nn.Dropout(dropout),
+                                 nn.Linear(mlp_dim, dim),
+                                 nn.Dropout(dropout))
+
+    def forward(self, x, z):
+        x = x + self.noise_proj(torch.cat((x, z), dim=-1))
+        x = x + self.attention(x)
+        x = x + self.mlp(x)
+        return x
+
 class CNNBlock(nn.Module):
     """Standard CNN Block. Conv2d, GELU, Conv2d."""
 
@@ -144,3 +163,49 @@ class CNNBlock(nn.Module):
 
     def forward(self, x):
         return x + self.block(x)
+
+class PixelShuffleDecoder(nn.Module):
+    """PixelShuffle decoder with a convolutional tail at high resolution (ESPCN/EDSR-style).
+
+       The token grid (B, dim, H_tokens, W_tokens) is progressively upsampled by factors
+       of 2 (Conv2d, PixelShuffle, GELU) up to the high-resolution grid, and then refined
+       with plain 3x3 convolutions operating at full resolution. The number of channels is
+       halved at each upsampling stage (with a floor of 32) to keep the computation at high
+       resolution tractable. The convolutions preceding each PixelShuffle are initialized with
+       ICNR (Aitken et al., 2017) to suppress checkerboard artifacts."""
+
+    def __init__(self, dim, scale, out_channels=1):
+        super().__init__()
+
+        if scale < 1 or (scale & (scale - 1)) != 0:
+            raise ValueError('scale must be a power of 2')
+
+        # Progressive x2 upsampling stages
+        upsampling = []
+        channels = dim
+        for _ in range(int(math.log2(scale))):
+            stage_out = max(channels // 2, 32)
+            conv = nn.Conv2d(channels, stage_out * 4, kernel_size=3, padding=1)
+            self._icnr_init(conv.weight, upscale_factor=2)
+            upsampling.extend([conv, nn.PixelShuffle(2), nn.GELU()])
+            channels = stage_out
+        self.upsampling = nn.Sequential(*upsampling)
+
+        # Convolutional tail at high resolution
+        self.tail = nn.Sequential(nn.Conv2d(channels, channels, kernel_size=3, padding=1),
+                                  nn.GELU(),
+                                  nn.Conv2d(channels, out_channels, kernel_size=3, padding=1))
+
+    @staticmethod
+    def _icnr_init(weight, upscale_factor):
+        """ICNR initialization (Aitken et al., 2017). Makes the Conv2d + PixelShuffle pair
+           equivalent to nearest-neighbour upsampling at initialization."""
+        out_channels, in_channels, h, w = weight.shape
+        sub_kernel = torch.empty(out_channels // upscale_factor**2, in_channels, h, w)
+        nn.init.kaiming_normal_(sub_kernel)
+        with torch.no_grad():
+            weight.copy_(sub_kernel.repeat_interleave(upscale_factor**2, dim=0))
+
+    def forward(self, x):
+        x = self.upsampling(x)
+        return self.tail(x)

@@ -6,7 +6,6 @@ Author: Jose González-Abad
 """
 
 import sys
-import sys
 import gc
 import types
 import torch
@@ -214,8 +213,35 @@ def _pred_stations_to_xarray(data_pred: np.ndarray, time_pred: np.ndarray,
 
     return template
 
+def _multivar_pred_to_xarray(data_pred: np.ndarray, time_pred: np.ndarray,
+                             var_targets: list, mask: xr.Dataset,
+                             spatial_dims: tuple[str, str]) -> xr.Dataset:
+    """Convert a multivariate prediction (time, n_vars, gridpoint) to xr.Dataset.
+
+    Each variable slice is mapped through the existing _pred_to_xarray using a
+    single-variable copy of the mask, then all variables are merged into one
+    Dataset.
+    """
+    mask_vars = list(mask.data_vars)
+    datasets = []
+    for i, vt in enumerate(var_targets):
+        if vt in mask.data_vars:
+            mask_i = mask[[vt]]
+        elif len(mask_vars) == 1:
+            mask_var = mask_vars[0]
+            mask_i = mask.rename({mask_var: vt}) if mask_var != vt else mask[[mask_var]]
+        else:
+            raise ValueError(f"Mask has no variable {vt!r}. Available: {mask_vars}")
+        ds_i = _pred_to_xarray(data_pred=data_pred[:, i, :],
+                               time_pred=time_pred,
+                               var_target=vt, mask=mask_i,
+                               spatial_dims=spatial_dims)
+        datasets.append(ds_i)
+    return xr.merge(datasets)
+
+
 def compute_preds_standard(x_data: xr.Dataset, model: torch.nn.Module, device: str,
-                           var_target: str,
+                           var_target=None,
                            mask: xr.Dataset=None, template: xr.Dataset=None,
                            ensemble_size: int=None,
                            batch_size: int=None,
@@ -247,8 +273,9 @@ def compute_preds_standard(x_data: xr.Dataset, model: torch.nn.Module, device: s
     device : str
         Device used to run the inference (cuda or cpu).
 
-    var_target : str
-        Target variable.
+    var_target : str or list[str]
+        Target variable name(s). A single string for univariate models, or a
+        list of strings for multivariate models (one name per output variable).
 
     mask : xr.Dataset
         Mask with no temporal dimension formed by ones/zeros for (spatial)
@@ -283,10 +310,16 @@ def compute_preds_standard(x_data: xr.Dataset, model: torch.nn.Module, device: s
     x_data_arr = trans.xarray_to_numpy(x_data)
 
     # Check for the mask and template
-    if mask and template:
-        raise ValueError('Provide either a mask or a template.')
-    if (not mask) and (not template):
+    if mask is not None and template is not None:
         raise ValueError('Provide either a mask or a template, not both.')
+    if mask is None and template is None:
+        raise ValueError('Provide either a mask or a template.')
+
+    multivariate = isinstance(var_target, (list, tuple))
+
+    if multivariate and template is not None:
+        raise ValueError('Multivariate prediction (list of var_target) is only '
+                         'supported with a mask, not a template.')
 
     # Add channel dimension for one-dimensional predictors
     if len(list(x_data.keys())) <= 1:
@@ -299,11 +332,17 @@ def compute_preds_standard(x_data: xr.Dataset, model: torch.nn.Module, device: s
     for _ in range(ensemble_size):
         data_aux = _predict(model=model, device=device, x_data=x_data_arr,
                             batch_size=batch_size)
-        if mask:
-            data_aux = _pred_to_xarray(data_pred=data_aux, time_pred=time_pred,
-                                       var_target=var_target, mask=mask,
-                                       spatial_dims=spatial_dims)
-        elif template:
+        if mask is not None:
+            if multivariate:
+                data_aux = _multivar_pred_to_xarray(
+                    data_pred=data_aux, time_pred=time_pred,
+                    var_targets=var_target, mask=mask,
+                    spatial_dims=spatial_dims)
+            else:
+                data_aux = _pred_to_xarray(data_pred=data_aux, time_pred=time_pred,
+                                           var_target=var_target, mask=mask,
+                                           spatial_dims=spatial_dims)
+        elif template is not None:
             data_aux = _pred_stations_to_xarray(data_pred=data_aux, time_pred=time_pred,
                                                 var_target=var_target, template=template)
         data_pred.append(data_aux)
