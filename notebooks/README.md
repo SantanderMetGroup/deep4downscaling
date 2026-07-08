@@ -2,7 +2,7 @@
 
 This folder contains example Jupyter notebooks that illustrate typical `deep4downscaling` workflows, from training to evaluation and explainability.
 
-These notebooks are the **tutorial** layer of the documentation. Narrative guides, API reference, and how-tos live in the [`docs/`](../docs/) directory and are published at [deep4downscaling.readthedocs.io](https://deep4downscaling.readthedocs.io).
+These notebooks are the **tutorial** layer of the documentation. Narrative guides, API reference, and how-tos live in the [`docs/`](../docs/) directory and are published at [deep4downscaling.readthedocs.io](https://deep4downscaling.readthedocs.io/en/latest/).
 
 ## Available notebooks
 

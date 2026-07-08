@@ -2,7 +2,7 @@
 
 This folder contains the Python source code of the `deep4downscaling` library.
 
-Full documentation: [deep4downscaling.readthedocs.io](https://deep4downscaling.readthedocs.io)
+Full documentation: [deep4downscaling.readthedocs.io](https://deep4downscaling.readthedocs.io/en/latest/)
 
 ## Main modules
 

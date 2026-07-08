@@ -1,13 +1,13 @@
 # Tutorials
 
-End-to-end Jupyter notebooks live in the [`notebooks/`](https://github.com/SantanderMetGroup/deep4downscaling/tree/devel/notebooks) directory of the repository. They are the primary **tutorial** layer of the documentation.
+End-to-end Jupyter notebooks live in the [`notebooks/`](https://github.com/SantanderMetGroup/deep4downscaling/tree/docs/notebooks) directory of the repository. They are the primary **tutorial** layer of the documentation.
 
 !!! note "Input data"
     Climate datasets are not stored in the repository due to size constraints. Each notebook documents how to obtain or prepare the required input files.
 
 ## Deterministic DeepESD
 
-**Notebook:** [`downscaling_deepesd.ipynb`](https://github.com/SantanderMetGroup/deep4downscaling/blob/devel/notebooks/downscaling_deepesd.ipynb)
+**Notebook:** [`downscaling_deepesd.ipynb`](https://github.com/SantanderMetGroup/deep4downscaling/blob/docs/notebooks/downscaling_deepesd.ipynb)
 
 End-to-end deterministic downscaling with DeepESD: training, test-period evaluation, and climate change signal generation from GCM outputs.
 
@@ -15,7 +15,7 @@ End-to-end deterministic downscaling with DeepESD: training, test-period evaluat
 
 ## Stochastic DeepESD
 
-**Notebook:** [`downscaling_stochastic_deepesd.ipynb`](https://github.com/SantanderMetGroup/deep4downscaling/blob/devel/notebooks/downscaling_stochastic_deepesd.ipynb)
+**Notebook:** [`downscaling_stochastic_deepesd.ipynb`](https://github.com/SantanderMetGroup/deep4downscaling/blob/docs/notebooks/downscaling_stochastic_deepesd.ipynb)
 
 Probabilistic DeepESD workflow using negative log-likelihood losses for temperature or precipitation.
 
@@ -23,7 +23,7 @@ Probabilistic DeepESD workflow using negative log-likelihood losses for temperat
 
 ## Conditional GAN (CGAN)
 
-**Notebook:** [`downscaling_cgan.ipynb`](https://github.com/SantanderMetGroup/deep4downscaling/blob/devel/notebooks/downscaling_cgan.ipynb)
+**Notebook:** [`downscaling_cgan.ipynb`](https://github.com/SantanderMetGroup/deep4downscaling/blob/docs/notebooks/downscaling_cgan.ipynb)
 
 Downscaling with a conditional GAN (Pix2Pix-style generator–discriminator setup).
 
@@ -31,7 +31,7 @@ Downscaling with a conditional GAN (Pix2Pix-style generator–discriminator setu
 
 ## Vision Transformer (ViT)
 
-**Notebook:** [`downscaling_vit.ipynb`](https://github.com/SantanderMetGroup/deep4downscaling/blob/devel/notebooks/downscaling_vit.ipynb)
+**Notebook:** [`downscaling_vit.ipynb`](https://github.com/SantanderMetGroup/deep4downscaling/blob/docs/notebooks/downscaling_vit.ipynb)
 
 Downscaling precipitation with a stochastic ViT trained using CRPS loss.
 
@@ -39,7 +39,7 @@ Downscaling precipitation with a stochastic ViT trained using CRPS loss.
 
 ## Explainability
 
-**Notebook:** [`explainability_deepesd.ipynb`](https://github.com/SantanderMetGroup/deep4downscaling/blob/devel/notebooks/explainability_deepesd.ipynb)
+**Notebook:** [`explainability_deepesd.ipynb`](https://github.com/SantanderMetGroup/deep4downscaling/blob/docs/notebooks/explainability_deepesd.ipynb)
 
 XAI workflow for interpreting DeepESD predictions.
 
@@ -47,7 +47,7 @@ XAI workflow for interpreting DeepESD predictions.
 
 ## CORDEXBench
 
-**Notebook:** [`cordexbench_downscaling_deepesd.ipynb`](https://github.com/SantanderMetGroup/deep4downscaling/blob/devel/notebooks/cordexbench_downscaling_deepesd.ipynb)
+**Notebook:** [`cordexbench_downscaling_deepesd.ipynb`](https://github.com/SantanderMetGroup/deep4downscaling/blob/docs/notebooks/cordexbench_downscaling_deepesd.ipynb)
 
 Reproducible example using the CORDEXBench benchmark dataset.
 
@@ -55,7 +55,7 @@ Reproducible example using the CORDEXBench benchmark dataset.
 
 ## Canary Islands domain
 
-**Notebook:** [`downscaling_deepesd_canary_islands.ipynb`](https://github.com/SantanderMetGroup/deep4downscaling/blob/devel/notebooks/downscaling_deepesd_canary_islands.ipynb)
+**Notebook:** [`downscaling_deepesd_canary_islands.ipynb`](https://github.com/SantanderMetGroup/deep4downscaling/blob/docs/notebooks/downscaling_deepesd_canary_islands.ipynb)
 
 DeepESD adapted to the Canary Islands domain — an example of regional customization.
 

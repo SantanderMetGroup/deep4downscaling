@@ -44,4 +44,4 @@ If you use `deep4downscaling` in your research, please cite the library via its 
 
 ## License
 
-MIT — see the [LICENSE](https://github.com/SantanderMetGroup/deep4downscaling/blob/devel/LICENSE) file in the repository.
+MIT — see the [LICENSE](https://github.com/SantanderMetGroup/deep4downscaling/blob/docs/LICENSE) file in the repository.

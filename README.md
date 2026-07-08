@@ -13,7 +13,7 @@
 
 `deep4downscaling` is a Python library for developing deep learning models for statistical downscaling. It provides data preprocessing, established architectures (DeepESD, U-Nets, ViT), training and inference utilities, community-standard evaluation metrics, climate change signal analysis, and explainability tools.
 
-**Documentation:** [deep4downscaling.readthedocs.io](https://deep4downscaling.readthedocs.io) (or build locally with `mkdocs serve`)
+**Documentation:** [deep4downscaling.readthedocs.io](https://deep4downscaling.readthedocs.io/en/latest/) (or build locally with `mkdocs serve`)
 
 ## Installation
 
@@ -46,7 +46,7 @@ from deep4downscaling.deep.train import standard_training_loop
 
 | Resource | Description |
 | --- | --- |
-| [Documentation site](https://deep4downscaling.readthedocs.io) | User guide, API reference, how-tos |
+| [Documentation site](https://deep4downscaling.readthedocs.io/en/latest/) | User guide, API reference, how-tos |
 | [`notebooks/`](notebooks/) | End-to-end Jupyter tutorial workflows |
 | [Contributing](docs/contributing.md) | Branching model and PR guidelines |
 

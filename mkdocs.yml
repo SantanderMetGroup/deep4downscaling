@@ -1,9 +1,9 @@
 site_name: deep4downscaling
 site_description: A Python library for deep learning statistical downscaling
-site_url: https://deep4downscaling.readthedocs.io
+site_url: https://deep4downscaling.readthedocs.io/en/latest/
 repo_url: https://github.com/SantanderMetGroup/deep4downscaling
 repo_name: SantanderMetGroup/deep4downscaling
-edit_uri: edit/devel/docs/
+edit_uri: edit/docs/docs/
 
 theme:
   name: material
