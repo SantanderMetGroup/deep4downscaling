@@ -1,0 +1,98 @@
+site_name: deep4downscaling
+site_description: A Python library for deep learning statistical downscaling
+site_url: https://deep4downscaling.readthedocs.io
+repo_url: https://github.com/SantanderMetGroup/deep4downscaling
+repo_name: SantanderMetGroup/deep4downscaling
+edit_uri: edit/devel/docs/
+
+theme:
+  name: material
+  palette:
+    - scheme: default
+      primary: indigo
+      accent: indigo
+      toggle:
+        icon: material/brightness-7
+        name: Switch to dark mode
+    - scheme: slate
+      primary: indigo
+      accent: indigo
+      toggle:
+        icon: material/brightness-4
+        name: Switch to light mode
+  features:
+    - navigation.tabs
+    - navigation.sections
+    - navigation.expand
+    - navigation.top
+    - search.suggest
+    - content.code.copy
+    - content.action.edit
+
+plugins:
+  - search
+  - mkdocstrings:
+      handlers:
+        python:
+          options:
+            docstring_style: numpy
+            show_source: true
+            show_root_heading: true
+            show_symbol_type_heading: true
+            members_order: source
+            separate_signature: true
+            show_signature_annotations: true
+
+markdown_extensions:
+  - admonition
+  - pymdownx.details
+  - pymdownx.superfences
+  - pymdownx.highlight
+  - pymdownx.inlinehilite
+  - pymdownx.tabbed:
+      alternate_style: true
+  - tables
+  - toc:
+      permalink: true
+
+nav:
+  - Home: index.md
+  - Getting started:
+      - Installation: getting-started/installation.md
+      - Quickstart: getting-started/quickstart.md
+      - Data conventions: getting-started/data-conventions.md
+  - User guide:
+      - Workflow: user-guide/workflow.md
+      - Preprocessing: user-guide/preprocessing.md
+      - Models:
+          - Overview: user-guide/models/overview.md
+          - DeepESD: user-guide/models/deepesd.md
+          - U-Nets: user-guide/models/unets.md
+          - Vision Transformers: user-guide/models/vit.md
+          - Conditional GANs: user-guide/models/cgan.md
+      - Loss functions: user-guide/losses.md
+      - Evaluation metrics: user-guide/metrics.md
+      - Projections & CCS: user-guide/projections.md
+      - Explainability (XAI): user-guide/xai.md
+  - Tutorials: tutorials/index.md
+  - How-to guides:
+      - Overview: how-to/index.md
+      - CORDEXBench workflow: how-to/cordexbench.md
+      - Canary Islands domain: how-to/canary-islands.md
+      - Resume training: how-to/resume-training.md
+      - Add a custom loss: how-to/custom-loss.md
+  - API reference:
+      - Overview: api/index.md
+      - Preprocessing (trans): api/trans.md
+      - Visualization (viz): api/viz.md
+      - Metrics: api/metrics.md
+      - Climate change signals: api/metrics_ccs.md
+      - Deep learning:
+          - Training: api/deep/train.md
+          - Prediction: api/deep/pred.md
+          - Models: api/deep/models.md
+          - Losses: api/deep/loss.md
+          - XAI: api/deep/xai.md
+          - Utilities: api/deep/utils.md
+          - Training tracker: api/deep/tracker.md
+  - Contributing: contributing.md
