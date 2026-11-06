@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: MIT
 
 """
-This module contains the building blocks for the DeepESDv2 model.
+Building blocks of the DeepESDv2 model.
 
 Authors:
     Jose González-Abad
@@ -18,30 +18,29 @@ class NeRFPositionalEncoding(nn.Module):
     """
     Multi-frequency sinusoidal positional encoding (Mildenhall et al., ECCV 2020).
 
-    Maps each coordinate vector to a high-dimensional embedding by evaluating
-    sin and cos at geometrically increasing frequencies.  For a scalar input
-    *x* and *L* frequency levels the encoding is
+    Each coordinate is mapped to sin/cos at geometrically increasing
+    frequencies; for a scalar input *x* and *L* frequency levels
 
     .. math::
         \\gamma(x) = \\bigl[\\sin(2^0 \\pi x),\\; \\cos(2^0 \\pi x),\\;
         \\ldots,\\; \\sin(2^{L-1} \\pi x),\\; \\cos(2^{L-1} \\pi x)\\bigr]
 
-    Applied independently to each of the ``coord_dim`` input dimensions the
-    output has ``2 * coord_dim * num_frequencies`` features.  An optional
-    learnable linear projection maps this to an arbitrary ``output_dim``.
+    Applied to each of the ``coord_dim`` input dimensions this gives
+    ``2 * coord_dim * num_frequencies`` features, optionally projected to
+    ``output_dim`` by a learned linear layer. Coordinates are expected in
+    roughly ``[-1, 1]``: the shortest wavelength is then ``2 / 2^(L-1)``.
 
     Parameters
     ----------
     coord_dim : int
-        Dimensionality of the input coordinates (e.g. 2 for lat/lon).
+        Dimensionality of the coordinates (2 for lat/lon).
 
     num_frequencies : int
         Number of frequency octaves *L*.
 
     output_dim : int or None, optional
-        If given, a ``Linear(2 * coord_dim * num_frequencies, output_dim)``
-        projection is appended.  When ``None`` the raw Fourier features are
-        returned directly.
+        Size of the learned output projection. When None, the raw Fourier
+        features are returned.
     """
 
     def __init__(self, coord_dim, num_frequencies, output_dim=None):
@@ -49,7 +48,7 @@ class NeRFPositionalEncoding(nn.Module):
         self.coord_dim = coord_dim
         self.num_frequencies = num_frequencies
 
-        freqs = (2.0 ** torch.arange(num_frequencies)) * math.pi  # (L,)
+        freqs = (2.0 ** torch.arange(num_frequencies)) * math.pi   # (L,)
         self.register_buffer('freqs', freqs)
 
         raw_dim = 2 * coord_dim * num_frequencies
@@ -61,343 +60,130 @@ class NeRFPositionalEncoding(nn.Module):
         return self._output_dim
 
     def forward(self, coords):
-        """
-        Parameters
-        ----------
-        coords : Tensor
-            Coordinate tensor of shape ``(N, coord_dim)``.
-
-        Returns
-        -------
-        Tensor
-            Positional encoding of shape ``(N, output_dim)`` (or
-            ``(N, 2 * coord_dim * num_frequencies)`` when no projection).
-        """
-        # coords: (N, D), freqs: (L,) -> (N, D, L)
-        x = coords.unsqueeze(-1) * self.freqs
-        # (N, D, L) -> (N, D*L) interleaved sin/cos -> (N, 2*D*L)
-        x = torch.cat([x.sin(), x.cos()], dim=-1)     # (N, D, 2L)
-        x = x.reshape(x.shape[0], -1)                  # (N, 2*D*L)
+        """``coords``: (N, coord_dim) -> (N, output_dim)."""
+        x = coords.unsqueeze(-1) * self.freqs                      # (N, D, L)
+        x = torch.cat([x.sin(), x.cos()], dim=-1)                  # (N, D, 2L)
+        x = x.reshape(x.shape[0], -1)                              # (N, 2DL)
         if self.output_proj is not None:
             x = self.output_proj(x)
         return x
 
 
+class ConvStem(nn.Module):
+    """
+    Convolutional stem: two 3x3 convolutions that turn every predictor grid
+    point into a ``dim``-dimensional token.
+
+    Compared with a 1x1 (per-point linear) embedding, the 3x3 neighbourhood
+    lets each token carry local horizontal structure of the fields (gradients,
+    curvature: e.g. vorticity, convergence, advection) before self-attention.
+    Early convolutions also make ViT optimisation easier (Xiao et al., 2021).
+
+    Parameters
+    ----------
+    in_channels : int
+        Number of predictor variables.
+
+    dim : int
+        Token dimension.
+    """
+
+    def __init__(self, in_channels, dim):
+        super().__init__()
+        self.net = nn.Sequential(
+            nn.Conv2d(in_channels, dim // 2, kernel_size=3, padding=1),
+            nn.GELU(),
+            nn.Conv2d(dim // 2, dim, kernel_size=3, padding=1))
+
+    def forward(self, x):
+        """``x``: (B, C, H, W) -> (B, dim, H, W)."""
+        return self.net(x)
+
+
 class MultiHeadCrossAttention(nn.Module):
     """
-    Multi-head cross-attention supporting different query and key/value dimensions.
+    Multi-head cross-attention from decoder queries to encoder tokens.
 
-    The Q projection maps from query_dim to kv_dim, so input queries can have a
-    smaller dimension than the encoder tokens. Attention is computed in kv_dim space,
-    and the output is also kv_dim-dimensional. This precludes using PyTorch's built-in
-    nn.MultiheadAttention, which always outputs at the query input dimension.
+    Uses ``F.scaled_dot_product_attention`` (FlashAttention / memory-efficient
+    kernels), so the (N_q, N_kv) attention matrix is never materialised.
+    The output projection is zero-initialised: with the residual connection of
+    the surrounding block, each decoder block starts as the identity
+    (DETR / Perceiver IO).
 
     Parameters
     ----------
-    query_dim : int
-        Dimension of the query input.
-
-    kv_dim : int
-        Dimension of the key/value input (encoder tokens). Must be divisible by
-        num_heads.
+    dim : int
+        Dimension of queries and tokens. Must be divisible by ``num_heads``.
 
     num_heads : int
         Number of attention heads.
 
     dropout : float, optional
-        Dropout probability on attention weights. Default is 0.0.
+        Dropout on the attention weights (training only). Default 0.
     """
 
-    def __init__(self, query_dim, kv_dim, num_heads, dropout=0.):
+    def __init__(self, dim, num_heads, dropout=0.):
         super().__init__()
-        assert kv_dim % num_heads == 0, 'kv_dim must be divisible by num_heads'
-
+        if dim % num_heads != 0:
+            raise ValueError('dim must be divisible by num_heads')
         self.num_heads = num_heads
-        self.head_dim = kv_dim // num_heads
+        self.head_dim = dim // num_heads
+        self.attn_dropout = dropout
 
-        self.q_proj = nn.Linear(query_dim, kv_dim)
-        self.k_proj = nn.Linear(kv_dim, kv_dim)
-        self.v_proj = nn.Linear(kv_dim, kv_dim)
-        self.out_proj = nn.Linear(kv_dim, kv_dim)
-        self.dropout = nn.Dropout(dropout)
-
-        # Zero-init the output projection so the cross-attention branch
-        # contributes zero at initialization. Combined with a residual
-        # connection in the surrounding decoder block this yields an
-        # identity-like start (DETR / Perceiver IO)
+        self.q_proj = nn.Linear(dim, dim)
+        self.k_proj = nn.Linear(dim, dim)
+        self.v_proj = nn.Linear(dim, dim)
+        self.out_proj = nn.Linear(dim, dim)
         nn.init.zeros_(self.out_proj.weight)
         nn.init.zeros_(self.out_proj.bias)
 
-    def forward(self, q, k, v):
-        B, N_q, _ = q.shape
+    def forward(self, queries, tokens):
+        """``queries``: (B, N_q, dim), ``tokens``: (B, N_kv, dim) -> (B, N_q, dim)."""
+        B, N_q, _ = queries.shape
+        q = self.q_proj(queries).reshape(B, N_q, self.num_heads, self.head_dim).transpose(1, 2)
+        k = self.k_proj(tokens).reshape(B, -1, self.num_heads, self.head_dim).transpose(1, 2)
+        v = self.v_proj(tokens).reshape(B, -1, self.num_heads, self.head_dim).transpose(1, 2)
 
-        q = self.q_proj(q).reshape(B, N_q, self.num_heads, self.head_dim).permute(0, 2, 1, 3)
-        k = self.k_proj(k).reshape(B, -1, self.num_heads, self.head_dim).permute(0, 2, 1, 3)
-        v = self.v_proj(v).reshape(B, -1, self.num_heads, self.head_dim).permute(0, 2, 1, 3)
-
-        scale = self.head_dim ** -0.5
-        attn = (q @ k.transpose(-2, -1)) * scale
-        attn = F.softmax(attn, dim=-1)
-        attn = self.dropout(attn)
-
-        out = (attn @ v).transpose(1, 2).contiguous().reshape(B, N_q, -1)
-        return self.out_proj(out)
-
-
-class MultiHeadLocalCrossAttention(nn.Module):
-    """
-    Multi-head local cross-attention supporting different query and key/value
-    dimensions.
-
-    Each query attends only to a precomputed subset of encoder tokens. The
-    locality constraint is enforced through a boolean attention mask rather
-    than by gathering per-query key/value slices, so K and V remain shared
-    across all queries. This avoids the memory blow-up that a gather-based
-    approach causes when the number of queries is much larger than the number
-    of encoder tokens (the typical downscaling regime).
-
-    Projections and output space follow the same conventions as
-    :class:`MultiHeadCrossAttention`: Q maps from query_dim to kv_dim, and
-    attention is computed entirely in kv_dim space.
-
-    Parameters
-    ----------
-    query_dim : int
-        Dimension of the query input.
-
-    kv_dim : int
-        Dimension of the key/value input (encoder tokens). Must be divisible by
-        num_heads.
-
-    num_heads : int
-        Number of attention heads.
-
-    dropout : float, optional
-        Dropout probability on attention weights. Default is 0.0.
-    """
-
-    def __init__(self, query_dim, kv_dim, num_heads, dropout=0.):
-        super().__init__()
-        assert kv_dim % num_heads == 0, 'kv_dim must be divisible by num_heads'
-
-        self.num_heads = num_heads
-        self.head_dim = kv_dim // num_heads
-
-        self.q_proj = nn.Linear(query_dim, kv_dim)
-        self.k_proj = nn.Linear(kv_dim, kv_dim)
-        self.v_proj = nn.Linear(kv_dim, kv_dim)
-        self.out_proj = nn.Linear(kv_dim, kv_dim)
-        self.dropout = nn.Dropout(dropout)
-
-        # Zero-init the output projection so the cross-attention branch
-        # contributes zero at initialization. Combined with a residual
-        # connection in the surrounding decoder block this yields an
-        # identity-like start (DETR / Perceiver IO).
-        nn.init.zeros_(self.out_proj.weight)
-        nn.init.zeros_(self.out_proj.bias)
-
-    def forward(self, q, k, v, attn_mask):
-        """
-        Parameters
-        ----------
-        q : Tensor
-            Query tensor of shape ``(B, N_q, query_dim)``.
-
-        k : Tensor
-            Key tensor of shape ``(B, N_kv, kv_dim)``.
-
-        v : Tensor
-            Value tensor of shape ``(B, N_kv, kv_dim)``.
-
-        attn_mask : Tensor
-            Boolean tensor of shape ``(N_q, N_kv)``. Positions that are
-            ``True`` are masked out (not attended to).
-
-        Returns
-        -------
-        Tensor
-            Output of shape ``(B, N_q, kv_dim)``.
-        """
-        B, N_q, _ = q.shape
-
-        q = self.q_proj(q).reshape(B, N_q, self.num_heads, self.head_dim).permute(0, 2, 1, 3)
-        k = self.k_proj(k).reshape(B, -1, self.num_heads, self.head_dim).permute(0, 2, 1, 3)
-        v = self.v_proj(v).reshape(B, -1, self.num_heads, self.head_dim).permute(0, 2, 1, 3)
-
-        scale = self.head_dim ** -0.5
-        attn = (q @ k.transpose(-2, -1)) * scale               # (B, H, N_q, N_kv)
-        attn = attn.masked_fill(attn_mask, float('-inf'))
-        attn = F.softmax(attn, dim=-1)
-        attn = self.dropout(attn)
-
-        out = (attn @ v).transpose(1, 2).contiguous().reshape(B, N_q, -1)
-        return self.out_proj(out)
+        out = F.scaled_dot_product_attention(
+            q, k, v, dropout_p=self.attn_dropout if self.training else 0.0)   # (B, H, N_q, hd)
+        return self.out_proj(out.transpose(1, 2).reshape(B, N_q, -1))
 
 
 class CrossAttentionDecoderBlock(nn.Module):
     """
-    Cross-attention decoder block (Perceiver IO style).
-
-    Cross-attention sub-layer with pre-norm on queries and keys/values. Optionally,
-    a feedforward MLP sub-layer (also pre-norm via LayerNorm inside the MLP stack)
-    with a residual connection. The cross-attention uses a residual connection only
-    when ``query_dim == kv_dim`` (subsequent decoder blocks); when
-    ``query_dim != kv_dim`` (first block), the dimension change makes a direct
-    residual impossible. When enabled, the MLP operates in ``kv_dim`` space.
+    Decoder block (Perceiver IO style): pre-norm cross-attention from the
+    queries to the encoder tokens, then a pre-norm MLP, each with a residual
+    connection. Queries never attend to each other, so every output point is
+    decoded independently given the encoder tokens.
 
     Parameters
     ----------
-    query_dim : int
-        Dimension of the input queries.
-
-    kv_dim : int
-        Dimension of the key/value input (encoder tokens).
+    dim : int
+        Dimension of queries and tokens.
 
     num_heads : int
         Number of attention heads.
 
     mlp_dim : int
-        Hidden dimension of the feedforward MLP when ``use_cross_attn_mlp`` is
-        True.
+        Hidden size of the MLP.
 
     dropout : float, optional
-        Dropout probability. Default is 0.0.
-
-    use_cross_attn_mlp : bool, optional
-        If True, apply a feedforward MLP after cross-attention (with residual).
-        Default is False (cross-attention only), matching the original DeepESDv2
-        global decoder.
+        Dropout probability. Default 0.
     """
 
-    def __init__(self, query_dim, kv_dim, num_heads, mlp_dim, dropout=0.,
-                 use_cross_attn_mlp=False):
+    def __init__(self, dim, num_heads, mlp_dim, dropout=0.):
         super().__init__()
+        self.norm_q = nn.LayerNorm(dim)
+        self.norm_kv = nn.LayerNorm(dim)
+        self.attn = MultiHeadCrossAttention(dim, num_heads, dropout)
+        self.mlp = nn.Sequential(nn.LayerNorm(dim),
+                                 nn.Linear(dim, mlp_dim),
+                                 nn.GELU(),
+                                 nn.Dropout(dropout),
+                                 nn.Linear(mlp_dim, dim),
+                                 nn.Dropout(dropout))
 
-        self.has_residual = (query_dim == kv_dim)
-        self.use_cross_attn_mlp = use_cross_attn_mlp
-
-        self.cross_attn_norm_q = nn.LayerNorm(query_dim)
-        self.cross_attn_norm_kv = nn.LayerNorm(kv_dim)
-        self.cross_attention = MultiHeadCrossAttention(query_dim, kv_dim, num_heads, dropout)
-
-        if use_cross_attn_mlp:
-            self.mlp = nn.Sequential(nn.LayerNorm(kv_dim),
-                                     nn.Linear(kv_dim, mlp_dim),
-                                     nn.GELU(),
-                                     nn.Dropout(dropout),
-                                     nn.Linear(mlp_dim, kv_dim),
-                                     nn.Dropout(dropout))
-        else:
-            self.mlp = None
-
-    def forward(self, queries, encoder_tokens):
-        """
-        Parameters
-        ----------
-        queries : Tensor
-            Query tensor of shape ``(B, N_q, query_dim)``.
-
-        encoder_tokens : Tensor
-            Encoder tokens of shape ``(B, N_kv, kv_dim)``.
-
-        Returns
-        -------
-        Tensor
-            Output of shape ``(B, N_q, kv_dim)``.
-        """
-        q = self.cross_attn_norm_q(queries)
-        kv = self.cross_attn_norm_kv(encoder_tokens)
-        attn_out = self.cross_attention(q, kv, kv)
-
-        if self.has_residual:
-            attn_out = queries + attn_out
-
-        if self.use_cross_attn_mlp:
-            return attn_out + self.mlp(attn_out)
-        return attn_out
-
-
-class LocalCrossAttentionDecoderBlock(nn.Module):
-    """
-    Local cross-attention decoder block (Perceiver IO style).
-
-    Same structure as :class:`CrossAttentionDecoderBlock` (optional post-attention
-    MLP) but uses :class:`MultiHeadLocalCrossAttention` so that each query only
-    attends to a precomputed subset of encoder tokens. This is useful when the
-    number of output queries is large and the downscaling task is spatially local.
-
-    Parameters
-    ----------
-    query_dim : int
-        Dimension of the input queries.
-
-    kv_dim : int
-        Dimension of the key/value input (encoder tokens).
-
-    num_heads : int
-        Number of attention heads.
-
-    mlp_dim : int
-        Hidden dimension of the feedforward MLP when ``use_cross_attn_mlp`` is
-        True.
-
-    dropout : float, optional
-        Dropout probability. Default is 0.0.
-
-    use_cross_attn_mlp : bool, optional
-        If True, apply a feedforward MLP after cross-attention (with residual).
-        Default is True.
-    """
-
-    def __init__(self, query_dim, kv_dim, num_heads, mlp_dim, dropout=0.,
-                 use_cross_attn_mlp=True):
-        super().__init__()
-
-        self.has_residual = (query_dim == kv_dim)
-        self.use_cross_attn_mlp = use_cross_attn_mlp
-
-        self.cross_attn_norm_q = nn.LayerNorm(query_dim)
-        self.cross_attn_norm_kv = nn.LayerNorm(kv_dim)
-        self.cross_attention = MultiHeadLocalCrossAttention(query_dim, kv_dim, num_heads, dropout)
-
-        if use_cross_attn_mlp:
-            self.mlp = nn.Sequential(nn.LayerNorm(kv_dim),
-                                     nn.Linear(kv_dim, mlp_dim),
-                                     nn.GELU(),
-                                     nn.Dropout(dropout),
-                                     nn.Linear(mlp_dim, kv_dim),
-                                     nn.Dropout(dropout))
-        else:
-            self.mlp = None
-
-    def forward(self, queries, encoder_tokens, attn_mask):
-        """
-        Parameters
-        ----------
-        queries : Tensor
-            Query tensor of shape ``(B, N_q, query_dim)``.
-
-        encoder_tokens : Tensor
-            Encoder tokens of shape ``(B, N_kv, kv_dim)``.
-
-        attn_mask : Tensor
-            Boolean mask of shape ``(N_q, N_kv)`` (see
-            :meth:`MultiHeadLocalCrossAttention.forward`).
-
-        Returns
-        -------
-        Tensor
-            Output of shape ``(B, N_q, kv_dim)``.
-        """
-        q = self.cross_attn_norm_q(queries)
-        kv = self.cross_attn_norm_kv(encoder_tokens)
-        attn_out = self.cross_attention(q, kv, kv, attn_mask)
-
-        if self.has_residual:
-            attn_out = queries + attn_out
-
-        if self.use_cross_attn_mlp:
-            return attn_out + self.mlp(attn_out)
-        return attn_out
-
-
+    def forward(self, queries, tokens):
+        """``queries``: (B, N_q, dim), ``tokens``: (B, N_kv, dim) -> (B, N_q, dim)."""
+        queries = queries + self.attn(self.norm_q(queries), self.norm_kv(tokens))
+        return queries + self.mlp(queries)

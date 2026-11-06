@@ -1,328 +1,205 @@
 # SPDX-License-Identifier: MIT
 
 """
-This module contains the DeepESDv2 model for statistical downscaling.
-
-DeepESDv2 uses a Vision Transformer (ViT) encoder and a cross-attention decoder.
-The decoder queries can be learnable embeddings or NeRF positional encodings
-derived from the geographic coordinates of each output grid point.
+DeepESDv2: a Vision Transformer encoder with a cross-attention decoder for
+statistical downscaling and RCM emulation.
 
 Authors:
     Jose González-Abad
 """
 
-from typing import Optional
-
 import torch
 import torch.nn as nn
 
 from ..vit.blocks import TransformerBlock
-from .blocks import (CrossAttentionDecoderBlock, LocalCrossAttentionDecoderBlock,
-                      NeRFPositionalEncoding)
+from .blocks import ConvStem, CrossAttentionDecoderBlock, NeRFPositionalEncoding
 
 
 class DeepESDv2(nn.Module):
     """
-    DeepESDv2: Vision Transformer encoder with cross-attention decoder for
-    statistical downscaling.
+    DeepESDv2 maps a coarse predictor field to a high-resolution target by
+    querying every output point with its location.
 
-    The encoder is identical to ViT: the input is split into patches, embedded,
-    processed by transformer blocks, and produces a set of encoder tokens. The
-    decoder uses query embeddings of dimension ``query_dim`` that are projected
-    to the encoder dimension through the Q weight matrix of the cross-attention
-    mechanism. Two query-embedding modes are supported:
+    Architecture::
 
-    * **Learnable (default):** one free ``nn.Parameter`` per output grid point,
-      used when ``grid_coords`` is ``None``.
-    * **NeRF positional encoding:** multi-frequency sinusoidal encoding
-      (Mildenhall et al., ECCV 2020) that evaluates sin/cos at geometrically
-      increasing frequencies, producing highly discriminative embeddings even
-      for spatially close grid points. Activated by passing ``grid_coords``.
-      A linear projection maps the raw features to ``query_dim``.
+        predictors (B, C, H, W)
+          └─ ConvStem (two 3x3 convs)            → one token per predictor grid point
+          └─ + NeRF(lat, lon of the grid point)  → (B, H*W, dim)
+          └─ ViT encoder (depth x TransformerBlock) + LayerNorm → tokens
 
-    When ``local_indices`` is provided the decoder uses local cross-attention:
-    each query attends only to a precomputed subset of K encoder tokens instead
-    of all of them, reducing cost from O(N_out * N_enc) to O(N_out * K).
+        query_i = [ NeRF(lat_i, lon_i) ‖ emb(covariable_1,i) ‖ ... ]   (dim)
+          └─ decoder_depth x [ cross-attention to tokens + MLP ]   (residual, pre-norm)
+          └─ Linear head (+ ReLU)                → (B, n_out[, num_vars])
 
-    Static covariables (e.g. orography, land-sea mask) that live on the
-    predictand grid can be injected via ``covariables``.  Each covariable is
-    independently projected to ``covar_embed_dim`` dimensions by a learned
-    linear layer shared across grid points, following the standard approach
-    used in GraphCast (Lam et al., Science 2023) and GenCast (Price et al.,
-    Nature 2024) for static surface features.  The resulting embeddings are
-    concatenated to the decoder queries before the first cross-attention
-    block, so that the cross-attention mechanism can condition on the local
-    surface properties of each output grid point.
+    Design choices:
+
+    * **Location queries.** Each output point is a query built from a NeRF
+      Fourier encoding of its coordinates (Mildenhall et al., 2020) plus
+      embeddings of static covariables (e.g. orography). The output grid is
+      therefore defined only by ``grid_coords``: points are decoded
+      independently (queries do not interact), so any subset can be decoded
+      with ``query_idx`` (Perceiver IO, Jaegle et al., 2022).
+    * **Convolutional stem.** Tokens are built with two 3x3 convolutions, so
+      each token sees its neighbourhood of the predictor field.
+    * **Unbounded head.** There is no LayerNorm before the linear head: since
+      a LayerNorm output has fixed norm, ``LayerNorm -> Linear`` bounds the
+      prediction (``|y| <= sqrt(dim) * ||w * gamma|| + const``), which caps
+      extremes of heavy-tailed variables such as precipitation.
+    * **Identity start.** The cross-attention output projections are
+      zero-initialised, so at initialisation the decoder passes the queries
+      through unchanged and the model starts from a static (climatology-like)
+      field.
+
+    Coordinates (``grid_coords``, ``encoder_grid_coords``) should share one
+    reference frame and be scaled to roughly ``[-1, 1]``, for example lat/lon
+    mapped with a common bounding box.
 
     Parameters
     ----------
     x_shape : tuple
-        Shape of the input data. Must be 4D: (batch, channels, height, width).
-        The spatial dimensions must be divisible by patch_size.
+        Shape of the input, (batch, channels, height, width).
 
     n_out : int
         Number of output grid points.
 
-    patch_size : int
-        Size of the patches extracted from the input for building token embeddings.
-        Must divide both spatial dimensions of the input.
+    grid_coords : torch.Tensor
+        (n_out, coord_dim) coordinates of the output grid points, in the order
+        of the model output.
 
-    dim : int
-        Embedding dimension for the encoder. Must be divisible by num_heads.
+    encoder_grid_coords : torch.Tensor
+        (height * width, coord_dim) coordinates of the predictor grid points,
+        in row-major (height, width) order.
 
-    depth : int
-        Number of transformer encoder blocks.
+    dim : int, optional
+        Token and query dimension. Default 256.
 
-    num_heads : int
-        Number of attention heads in transformer and cross-attention blocks.
+    depth : int, optional
+        Number of encoder transformer blocks. Default 4.
 
-    mlp_dim : int
-        Hidden dimension of the MLP in the encoder transformer blocks and, when
-        the decoder applies a post-cross-attention MLP, of that MLP as well.
+    num_heads : int, optional
+        Attention heads in the encoder and the decoder. Default 4.
 
-    decoder_depth : int
-        Number of cross-attention decoder blocks.
+    mlp_dim : int, optional
+        Hidden size of the encoder and decoder MLPs. Default 1024.
 
-    query_dim : int
-        Dimension of the decoder query embeddings. Used by the learnable mode
-        and as the output projection dimension in the NeRF mode.
-
-    local_indices : torch.Tensor or None, optional
-        Long tensor of shape ``(n_out, K)`` mapping each query to K encoder
-        tokens for local cross-attention. When None (default), standard global
-        cross-attention is used.
-
-    decoder_cross_attn_mlp : bool or None, optional
-        Whether each decoder block applies a feedforward MLP after cross-attention.
-        If ``None`` (default), the global cross-attention decoder omits this MLP
-        (historical behavior), while local decoders include it. If ``True`` or
-        ``False``, that choice applies to all decoder block types.
-
-    grid_coords : torch.Tensor or None, optional
-        Float tensor of shape ``(n_out, coord_dim)`` with the spatial coordinates
-        of each output grid point. Coordinates should be pre-normalized to a
-        suitable range (e.g. ``[-1, 1]``) before being passed; the model stores
-        and uses them as-is. When provided, NeRF positional encoding is used for
-        the decoder queries; when ``None`` (default), learnable embeddings are
-        used instead.
+    decoder_depth : int, optional
+        Number of cross-attention decoder blocks. Default 2.
 
     nerf_num_frequencies : int, optional
-        Number of frequency octaves for the NeRF encoding. Only used when
-        ``grid_coords`` or ``encoder_grid_coords`` is provided. Default is 10.
-
-    encoder_grid_coords : torch.Tensor or None, optional
-        Float tensor of shape ``(num_patches, coord_dim)`` with the spatial
-        coordinates of each encoder patch center. When provided, NeRF
-        positional encoding replaces the learnable encoder position
-        embeddings. When ``None`` (default), learnable embeddings are used.
-
-    share_nerf_encoding : bool, optional
-        If True and both ``grid_coords`` and ``encoder_grid_coords`` are
-        provided, the encoder and decoder share the same
-        ``NeRFPositionalEncoding`` module (including its learnable linear
-        projection). This requires ``dim == query_dim``. Default is False.
+        Frequency octaves of the NeRF encodings. Default 8.
 
     covariables : torch.Tensor or None, optional
-        Float tensor of shape ``(n_out, n_covars)`` with static covariable
-        values for each output grid point (e.g. orography, land-sea mask).
-        Covariables should be pre-normalized to a suitable range (e.g.
-        ``[-1, 1]``) before being passed.  Each covariable column is embedded
-        independently by a learned ``Linear(1, covar_embed_dim)`` layer shared
-        across grid points.  The embeddings are concatenated to the decoder
-        queries.  When ``None`` (default), no covariables are used.
+        (n_out, n_covars) static fields at the output points (e.g. orography),
+        scaled to roughly ``[-1, 1]``. Each column is embedded by its own
+        ``Linear(1, covar_embed_dim)`` and concatenated to the query. Default
+        None.
 
     covar_embed_dim : int, optional
-        Embedding dimension produced by each covariable projection layer.
-        Only used when ``covariables`` is provided. Default is 16.
+        Embedding size per covariable. The NeRF part of the query gets
+        ``dim - n_covars * covar_embed_dim`` dimensions. Default 16.
 
     num_vars : int, optional
-        Number of output variables. The output shape is always (B, N_out, num_vars).
-        Default is 1.
+        Number of output variables. Default 1.
 
     dropout : float, optional
-        Dropout probability. Default is 0.0.
+        Dropout probability. Default 0.
 
     last_relu : bool, optional
-        If True, applies ReLU to the final output. Default is False.
+        Apply a ReLU to the output (e.g. for precipitation). Default False.
     """
 
-    def __init__(self, x_shape, n_out, patch_size, dim, depth, num_heads,
-                 mlp_dim, decoder_depth, query_dim, local_indices=None,
-                 decoder_cross_attn_mlp: Optional[bool] = None,
-                 grid_coords=None, nerf_num_frequencies=10,
-                 encoder_grid_coords=None, share_nerf_encoding=False,
-                 covariables=None, covar_embed_dim=16,
+    def __init__(self, x_shape, n_out, grid_coords, encoder_grid_coords,
+                 dim=256, depth=4, num_heads=4, mlp_dim=1024, decoder_depth=2,
+                 nerf_num_frequencies=8, covariables=None, covar_embed_dim=16,
                  num_vars=1, dropout=0., last_relu=False):
         super().__init__()
 
         if len(x_shape) != 4:
             raise ValueError('x_shape must be 4D (B, C, H, W)')
+        n_tokens = x_shape[2] * x_shape[3]
+        if encoder_grid_coords.shape[0] != n_tokens:
+            raise ValueError(f'encoder_grid_coords must have {n_tokens} rows (H * W)')
+        if grid_coords.shape[0] != n_out:
+            raise ValueError('grid_coords must have n_out rows')
+        if covariables is not None and covariables.shape[0] != n_out:
+            raise ValueError('covariables must have n_out rows')
 
-        if x_shape[2] % patch_size != 0 or x_shape[3] % patch_size != 0:
-            raise ValueError('Input spatial dimensions must be divisible by patch_size')
+        n_covars = 0 if covariables is None else covariables.shape[1]
+        query_pos_dim = dim - n_covars * covar_embed_dim
+        if query_pos_dim <= 0:
+            raise ValueError('dim must exceed n_covars * covar_embed_dim')
 
-        self.last_relu = last_relu
         self.num_vars = num_vars
-
-        num_patches = (x_shape[2] // patch_size) * (x_shape[3] // patch_size)
+        self.last_relu = last_relu
 
         # ENCODER
-
-        self.patch_embedding = nn.Conv2d(x_shape[1], dim,
-                                         kernel_size=patch_size, stride=patch_size)
-
-        self.share_nerf_encoding = share_nerf_encoding and encoder_grid_coords is not None
-
-        if encoder_grid_coords is not None:
-            if encoder_grid_coords.shape[0] != num_patches:
-                raise ValueError('encoder_grid_coords first dim must equal num_patches')
-            self.register_buffer('encoder_grid_coords', encoder_grid_coords)
-            self.pos_embedding = None
-            if self.share_nerf_encoding:
-                if grid_coords is None:
-                    raise ValueError('share_nerf_encoding requires grid_coords (decoder NeRF)')
-                if dim != query_dim:
-                    raise ValueError('share_nerf_encoding requires dim == query_dim')
-            else:
-                self.encoder_pos_encoder = NeRFPositionalEncoding(
-                    encoder_grid_coords.shape[1], nerf_num_frequencies, output_dim=dim)
-        else:
-            self.encoder_grid_coords = None
-            self.pos_embedding = nn.Parameter(torch.empty(1, num_patches, dim))
-            nn.init.trunc_normal_(self.pos_embedding, std=0.02)
-
-        self.dropout_emb = nn.Dropout(dropout)
-
-        self.transformer_blocks = nn.Sequential(*[
-            TransformerBlock(dim, num_heads, mlp_dim, dropout)
-            for _ in range(depth)
-        ])
+        self.stem = ConvStem(x_shape[1], dim)
+        self.register_buffer('encoder_grid_coords', encoder_grid_coords)
+        self.encoder_pos = NeRFPositionalEncoding(encoder_grid_coords.shape[1],
+                                                  nerf_num_frequencies, output_dim=dim)
+        self.embed_dropout = nn.Dropout(dropout)
+        self.encoder = nn.Sequential(*[TransformerBlock(dim, num_heads, mlp_dim, dropout)
+                                       for _ in range(depth)])
         self.encoder_norm = nn.LayerNorm(dim)
 
-        # DECODER
-
-        self.use_local_attention = local_indices is not None
-        if self.use_local_attention:
-            self.register_buffer('local_indices', local_indices)
-            attn_mask = torch.ones(n_out, num_patches, dtype=torch.bool)
-            attn_mask.scatter_(1, local_indices, False)
-            self.register_buffer('local_attn_mask', attn_mask)
-
-        if grid_coords is not None:
-            if grid_coords.shape[0] != n_out:
-                raise ValueError('grid_coords first dim must equal n_out')
-            self.register_buffer('grid_coords', grid_coords)
-            self.query_encoder = NeRFPositionalEncoding(
-                grid_coords.shape[1], nerf_num_frequencies, output_dim=query_dim)
-            self.query_embedding = None
-            effective_query_dim = self.query_encoder.output_dim
-        else:
-            self.grid_coords = None
-            self.query_encoder = None
-            self.query_embedding = nn.Parameter(torch.empty(1, n_out, query_dim))
-            nn.init.trunc_normal_(self.query_embedding, std=0.02)
-            effective_query_dim = query_dim
-
-        # COVARIABLE EMBEDDINGS
-
-        self.has_covariables = covariables is not None
-        if self.has_covariables:
-            if covariables.shape[0] != n_out:
-                raise ValueError('covariables first dim must equal n_out')
+        # QUERIES
+        self.register_buffer('grid_coords', grid_coords)
+        self.query_pos = NeRFPositionalEncoding(grid_coords.shape[1], nerf_num_frequencies,
+                                                output_dim=query_pos_dim)
+        if covariables is not None:
             self.register_buffer('covariables', covariables)
-            n_covars = covariables.shape[1]
-            self.covar_embeddings = nn.ModuleList([
-                nn.Linear(1, covar_embed_dim) for _ in range(n_covars)
-            ])
-            effective_query_dim += n_covars * covar_embed_dim
-
-        # Validate that effective query dimension equals encoder dimension (kv_dim)
-        # This is required for residual connections in the first decoder block.
-        # Without this, query identity is lost at initialization.
-        if effective_query_dim != dim:
-            raise ValueError(f'effective_query_dim ({effective_query_dim}) must equal dim ({dim}) '
-                             f'for cross-attention decoder with residual connections. '
-                             f'Adjust query_dim, covar_embed_dim, or number of covariables. '
-                             f'Query components: query_dim={query_dim}, '
-                             f'covar_embed_dim={covar_embed_dim}, n_covars={n_covars if self.has_covariables else 0}')
-
-        if self.use_local_attention:
-            DecoderBlock = LocalCrossAttentionDecoderBlock
+            self.covar_embeddings = nn.ModuleList([nn.Linear(1, covar_embed_dim)
+                                                   for _ in range(n_covars)])
         else:
-            DecoderBlock = CrossAttentionDecoderBlock
+            self.covariables = None
 
-        if decoder_cross_attn_mlp is None:
-            use_cross_attn_mlp = (DecoderBlock is not CrossAttentionDecoderBlock)
-        else:
-            use_cross_attn_mlp = decoder_cross_attn_mlp
+        # DECODER
+        self.decoder = nn.ModuleList([CrossAttentionDecoderBlock(dim, num_heads, mlp_dim, dropout)
+                                      for _ in range(decoder_depth)])
+        self.head = nn.Linear(dim, num_vars)
 
-        decoder_blocks = []
-        for i in range(decoder_depth):
-            q_dim = effective_query_dim if i == 0 else dim
-            decoder_blocks.append(DecoderBlock(
-                q_dim, dim, num_heads, mlp_dim, dropout,
-                use_cross_attn_mlp=use_cross_attn_mlp))
-        self.decoder_blocks = nn.ModuleList(decoder_blocks)
-        self.decoder_norm = nn.LayerNorm(dim)
+    def encode(self, x):
+        """Predictors (B, C, H, W) -> encoder tokens (B, H*W, dim)."""
+        tokens = self.stem(x).flatten(2).transpose(1, 2)                    # (B, H*W, dim)
+        tokens = tokens + self.encoder_pos(self.encoder_grid_coords).unsqueeze(0)
+        tokens = self.embed_dropout(tokens)
+        return self.encoder_norm(self.encoder(tokens))
 
-        self.output_head = nn.Linear(dim, num_vars)
+    def queries(self, query_idx=None):
+        """Decoder queries (N_q, dim) for all output points or the subset ``query_idx``."""
+        coords = self.grid_coords if query_idx is None else self.grid_coords[query_idx]
+        queries = self.query_pos(coords)
+        if self.covariables is not None:
+            cov = self.covariables if query_idx is None else self.covariables[query_idx]
+            embs = [fc(cov[:, i:i + 1]) for i, fc in enumerate(self.covar_embeddings)]
+            queries = torch.cat([queries, *embs], dim=-1)
+        return queries
 
-    def forward(self, x):
+    def forward(self, x, query_idx=None):
         """
         Parameters
         ----------
-        x : Tensor
-            Input batch of shape ``(B, C, H, W)`` matching ``x_shape``.
+        x : torch.Tensor
+            Predictors of shape (B, C, H, W).
+
+        query_idx : torch.LongTensor or None, optional
+            Output points to decode. Points are decoded independently, so this
+            equals decoding all points and selecting ``query_idx``; useful to
+            train on random subsets of the grid. Default None (all points).
 
         Returns
         -------
-        Tensor
-            Predictions of shape ``(B, n_out, num_vars)``.
+        torch.Tensor
+            (B, N_q, num_vars), or (B, N_q) when ``num_vars == 1``.
         """
-        B = x.shape[0]
-
-        # ENCODER
-
-        tokens = self.patch_embedding(x)
-        tokens = tokens.flatten(2).transpose(1, 2)    # (B, N_enc, dim)
-
-        if self.encoder_grid_coords is not None:
-            enc = self.query_encoder if self.share_nerf_encoding else self.encoder_pos_encoder
-            tokens = tokens + enc(self.encoder_grid_coords).unsqueeze(0)
-        else:
-            tokens = tokens + self.pos_embedding
-        tokens = self.dropout_emb(tokens)
-
-        tokens = self.transformer_blocks(tokens)
-        encoder_tokens = self.encoder_norm(tokens)     # (B, N_enc, dim)
-
-        # DECODER
-
-        if self.query_embedding is not None:
-            queries = self.query_embedding.expand(B, -1, -1)       # (B, N_out, query_dim)
-        else:
-            queries = self.query_encoder(self.grid_coords)         # (N_out, query_dim)
-            queries = queries.unsqueeze(0).expand(B, -1, -1)       # (B, N_out, query_dim)
-
-        if self.has_covariables:
-            covar_embs = [fc(self.covariables[:, i:i+1])
-                          for i, fc in enumerate(self.covar_embeddings)]
-            covar_emb = torch.cat(covar_embs, dim=-1).unsqueeze(0).expand(B, -1, -1)
-            queries = torch.cat([queries, covar_emb], dim=-1)
-
-        for block in self.decoder_blocks:
-            if self.use_local_attention:
-                queries = block(queries, encoder_tokens, self.local_attn_mask)
-            else:
-                queries = block(queries, encoder_tokens)
-        queries = self.decoder_norm(queries)               # (B, N_out, dim)
-
-        out = self.output_head(queries)                    # (B, N_out, num_vars)
+        tokens = self.encode(x)
+        queries = self.queries(query_idx).unsqueeze(0).expand(x.shape[0], -1, -1)
+        for block in self.decoder:
+            queries = block(queries, tokens)
+        out = self.head(queries)
 
         if self.last_relu:
             out = torch.relu(out)
-
         if self.num_vars == 1:
-            out = out.squeeze(-1)                          # (B, N_out)
-
+            out = out.squeeze(-1)
         return out

@@ -26,8 +26,9 @@ def standard_training_loop(model: torch.nn.Module, model_name: str, model_path: 
                            save_checkpoint_every: int=None,
                            resume_checkpoint: str=None,
                            save_versions_every: int=None,
-                           tracker: 'TrainingTracker'=None) -> dict:
-    
+                           tracker: 'TrainingTracker'=None,
+                           mixed_precision_dtype: torch.dtype=torch.float16) -> dict:
+
     """
     Standard training loop for a DL model in a supervised setting. Besides the
     training, it is possible to perform a validation step and control the saving 
@@ -109,6 +110,11 @@ def standard_training_loop(model: torch.nn.Module, model_name: str, model_path: 
         Training tracker instance for logging during training. If not
         provided, no tracking is performed.
 
+    mixed_precision_dtype : torch.dtype, optional
+        Autocast dtype used when mixed_precision is True. torch.float16
+        (default) uses a GradScaler to avoid gradient underflow;
+        torch.bfloat16 has the fp32 exponent range and needs no scaling.
+
     Returns
     -------
     dict
@@ -123,9 +129,9 @@ def standard_training_loop(model: torch.nn.Module, model_name: str, model_path: 
         os.makedirs(versions_dir, exist_ok=True)
 
     # The scaler scales the loss to avoid the underflow
-    # of gradients
+    # of gradients (only needed for float16; a disabled scaler is a no-op)
     if mixed_precision:
-        scaler = torch.amp.GradScaler()
+        scaler = torch.amp.GradScaler(enabled=(mixed_precision_dtype == torch.float16))
 
     # Set the early stopping parameters
     if patience_early_stopping is not None:
@@ -176,7 +182,7 @@ def standard_training_loop(model: torch.nn.Module, model_name: str, model_path: 
             optimizer.zero_grad()
 
             if mixed_precision:
-                with torch.amp.autocast(device_type=device):
+                with torch.amp.autocast(device_type=device, dtype=mixed_precision_dtype):
                     output = model(x)
                     loss = loss_function(target=y, output=output)
                 scaler.scale(loss).backward()
@@ -210,23 +216,24 @@ def standard_training_loop(model: torch.nn.Module, model_name: str, model_path: 
             batch_valid_components = {}
 
             model.eval()
-            for x, y in valid_data:
+            with torch.no_grad():
+                for x, y in valid_data:
 
-                x = x.to(device)
-                y = y.to(device)
+                    x = x.to(device)
+                    y = y.to(device)
 
-                if mixed_precision:
-                    with torch.amp.autocast(device_type=device):
+                    if mixed_precision:
+                        with torch.amp.autocast(device_type=device, dtype=mixed_precision_dtype):
+                            output = model(x)
+                            loss = loss_function(target=y, output=output)
+                    else:
                         output = model(x)
                         loss = loss_function(target=y, output=output)
-                else:
-                    output = model(x)
-                    loss = loss_function(target=y, output=output)
 
-                epoch_valid_loss[-1] += loss.item()
-                if hasattr(loss_function, 'last_components'):
-                    for k, v in loss_function.last_components.items():
-                        batch_valid_components[k] = batch_valid_components.get(k, 0.0) + v
+                    epoch_valid_loss[-1] += loss.item()
+                    if hasattr(loss_function, 'last_components'):
+                        for k, v in loss_function.last_components.items():
+                            batch_valid_components[k] = batch_valid_components.get(k, 0.0) + v
 
             # Compute mean loss across the epoch
             epoch_valid_loss[-1] = epoch_valid_loss[-1] / len(valid_data)
